@@ -1,0 +1,13 @@
+# Build output
+/smtp-bridge
+/smtp-bridge.exe
+/dist/
+
+# Local config and runtime data
+/config.yaml
+*.db
+*.db-wal
+*.db-shm
+
+# Editor/OS noise
+.DS_Store

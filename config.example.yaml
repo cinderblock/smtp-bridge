@@ -1,0 +1,76 @@
+# smtp-bridge configuration example.
+# Copy to config.yaml and edit. Run: smtp-bridge -config config.yaml
+
+# Address to listen on. 2525 is a safe unprivileged default; use :25 only if you
+# understand the implications and have the privileges/capabilities to bind it.
+listen: ":2525"
+
+# Hostname announced in the SMTP greeting / EHLO.
+hostname: "smtp-bridge.local"
+
+# Reject DATA larger than this many bytes (default 25 MiB).
+max_message_bytes: 26214400
+
+read_timeout: "60s"
+write_timeout: "60s"
+
+# STARTTLS. Leave cert_file/key_file empty to disable TLS (AUTH then travels in
+# the clear — only acceptable on trusted/loopback networks). Set required: true
+# to force STARTTLS before AUTH.
+tls:
+  cert_file: ""
+  key_file: ""
+  required: false
+
+# AUTH is mandatory: at least one user must be defined. Each user sets exactly
+# one of password (plaintext) or password_bcrypt (a bcrypt hash, preferred).
+auth:
+  users:
+    - username: "alice"
+      password: "change-me"
+    # - username: "bob"
+    #   password_bcrypt: "$2a$10$......"
+  # Optional CIDR allowlist applied on top of AUTH. Empty = allow any source IP.
+  allow_ips: []
+    # - "10.0.0.0/8"
+    # - "192.168.1.0/24"
+
+# Optional message logging (opt-OUT). The database file is always used for the
+# durable async delivery queue; this flag only controls whether message content
+# and delivery history are persisted.
+logging:
+  enabled: true
+  database: "./smtp-bridge.db"
+
+# Global delivery defaults. Individual routes may override `mode`.
+delivery:
+  default_mode: "async"   # async = accept + durable retry; sync = 250 only on 2xx
+  timeout: "30s"          # per-attempt HTTP timeout
+  max_retries: 5          # async only
+  retry_backoff: "10s"    # async only; exponential (base * 2^(attempt-1))
+  concurrency: 4          # async worker parallelism
+
+# Routes are evaluated in order; the first whose match conditions all pass wins.
+# A recipient matching no route is rejected at RCPT time (SMTP 550).
+routes:
+  - name: "myapp"
+    match:
+      # Every non-empty condition must match (AND). An empty match block is a
+      # catch-all. rcpt_localpart ignores any "+tag" subaddress suffix.
+      rcpt_domain: "hooks.example.com"
+      # rcpt_localpart: "myapp"
+      # rcpt: "myapp@hooks.example.com"
+    webhook:
+      url: "https://myapp.example.com/inbound-mail"
+      method: "POST"
+      # HMAC-SHA256 signing key. When set, each request carries
+      # X-SMTP-Bridge-Signature: sha256=<hex of HMAC over the raw body>.
+      secret: "a-long-random-signing-secret"
+      headers:
+        # Any extra static headers, e.g. an auth token for the receiving app.
+        # Authorization: "Bearer ..."
+    mode: "async"          # override delivery.default_mode for this route
+    include:
+      raw: false                 # include base64 of the full .eml as raw_eml_b64
+      attachments: true          # include attachment bodies (base64) in the payload
+      max_attachment_bytes: 10485760  # 0 = unlimited; larger attachments are marked truncated
