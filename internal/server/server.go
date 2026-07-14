@@ -84,11 +84,26 @@ func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 		host, _, _ := net.SplitHostPort(remote.String())
 		ip := net.ParseIP(host)
 		if ip == nil || !b.ipAllowed(ip) {
-			b.log.Warn("rejected connection: IP not allowlisted", "remote", remote.String())
-			return nil, &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "connection not permitted"}
+			err := &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "connection not permitted"}
+			b.recordRejection("connect", remote.String(), "", "", "", err)
+			return nil, err
 		}
 	}
 	return &session{be: b, remote: remote.String()}, nil
+}
+
+// recordRejection logs a refused request to stderr and persists it for later
+// inspection via the `rejections` subcommand.
+func (b *Backend) recordRejection(stage, remote, username, from, rcpt string, e *smtp.SMTPError) {
+	b.log.Warn("rejected request",
+		"stage", stage, "code", e.Code, "reason", e.Message,
+		"remote", remote, "user", username, "from", from, "rcpt", rcpt)
+	if err := b.store.LogRejection(store.Rejection{
+		At: time.Now(), Stage: stage, Code: e.Code,
+		RemoteAddr: remote, Username: username, From: from, Rcpt: rcpt, Reason: e.Message,
+	}); err != nil {
+		b.log.Error("failed to persist rejection", "err", err)
+	}
 }
 
 func (b *Backend) ipAllowed(ip net.IP) bool {
@@ -114,6 +129,13 @@ type session struct {
 	rcpts    []recipient
 }
 
+// reject records a rejection with the session's current envelope context and
+// returns the error to hand back to go-smtp.
+func (s *session) reject(stage, rcpt string, e *smtp.SMTPError) error {
+	s.be.recordRejection(stage, s.remote, s.username, s.from, rcpt, e)
+	return e
+}
+
 func (s *session) AuthMechanisms() []string {
 	return []string{sasl.Plain, sasl.Login}
 }
@@ -124,9 +146,12 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		if !ok {
 			// Compare against a dummy bcrypt to reduce username enumeration timing.
 			bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinva"), []byte(password))
+			// Record with the attempted username (s.username is still unset).
+			s.be.recordRejection("auth", s.remote, username, "", "", errAuthFailed)
 			return errAuthFailed
 		}
 		if !checkPassword(u, password) {
+			s.be.recordRejection("auth", s.remote, username, "", "", errAuthFailed)
 			return errAuthFailed
 		}
 		s.username = username
@@ -155,7 +180,7 @@ func checkPassword(u config.User, password string) bool {
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	if s.username == "" {
-		return &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "authentication required"}
+		return s.reject("mail", "", &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "authentication required"})
 	}
 	s.from = from
 	return nil
@@ -166,7 +191,7 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	route, ok := s.be.router.Match(to)
 	if !ok {
-		return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "no route configured for recipient"}
+		return s.reject("rcpt", to, &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "no route configured for recipient"})
 	}
 	s.rcpts = append(s.rcpts, recipient{addr: to, route: route})
 	return nil
@@ -210,8 +235,9 @@ func (s *session) Data(r io.Reader) error {
 			code, derr := s.be.deliverer.DeliverSync(ctx, route, payload)
 			cancel()
 			if derr != nil {
-				s.be.log.Warn("sync delivery failed, rejecting message", "route", name, "message_id", id, "status", code, "err", derr)
-				return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "downstream webhook rejected message, try again later"}
+				return s.reject("data", strings.Join(s.rcptAddrs(), ","),
+					&smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0},
+						Message: fmt.Sprintf("downstream webhook for route %q rejected message (status %d), try again later", name, code)})
 			}
 			s.be.log.Info("sync delivered", "route", name, "message_id", id, "status", code)
 		} else {
@@ -222,7 +248,8 @@ func (s *session) Data(r io.Reader) error {
 		payload := delivery.BuildPayload(id, receivedAt, route, msg)
 		if err := s.be.deliverer.Enqueue(payload); err != nil {
 			s.be.log.Error("failed to enqueue async delivery", "route", route.Name, "message_id", id, "err", err)
-			return &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporary failure queuing message"}
+			return s.reject("data", strings.Join(s.rcptAddrs(), ","),
+				&smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporary failure queuing message"})
 		}
 		s.be.log.Info("queued async delivery", "route", route.Name, "message_id", id)
 	}

@@ -63,6 +63,34 @@ swaks --server localhost:2525 --auth PLAIN --auth-user alice --auth-password cha
       --header "Subject: hello" --body "it works"
 ```
 
+## Debugging rejected requests
+
+Every request the server refuses is **logged to stderr** at `WARN` with full
+context and **persisted** (envelope metadata only — no bodies) so you can see at
+a glance when a sender is misconfigured. Rejections are captured at each stage:
+
+| stage     | example reason                          |
+|-----------|-----------------------------------------|
+| `connect` | source IP not in `auth.allow_ips`       |
+| `auth`    | bad username/password                   |
+| `mail`    | `MAIL FROM` issued before `AUTH`        |
+| `rcpt`    | recipient matched no route (SMTP 550)   |
+| `data`    | sync webhook returned non-2xx / enqueue failed |
+
+Dump the most recent ones (oldest-first, so a tail reads naturally):
+
+```sh
+smtp-bridge rejections -config config.yaml        # last 50
+smtp-bridge rejections -config config.yaml -n 200 # last 200
+```
+
+```
+2026-07-14T14:43:28-07:00  stage=rcpt  code=550  ip=203.0.113.9:51002 user="alice" from="a@x.com" rcpt="typo@wrong.example" reason="no route configured for recipient"
+```
+
+Reading works while the server is running (WAL allows concurrent readers).
+Disable DB persistence with `logging.log_rejections: false` (stderr logs remain).
+
 ## Webhook payload
 
 `POST` with `Content-Type: application/json`:
@@ -119,5 +147,5 @@ GOOS=windows GOARCH=amd64 go build -o dist/smtp-bridge-windows-amd64.exe ./cmd/s
 ## Status / roadmap
 
 Working: AUTH, STARTTLS, routing, sync + async delivery, retries, HMAC signing,
-SQLite logging + durable queue. Planned: Dockerfile / goreleaser, systemd unit,
-optional D1 remote log sink, metrics endpoint.
+SQLite logging + durable queue, rejected-request logging + `rejections` viewer.
+Planned: Dockerfile / goreleaser, systemd unit, optional D1 remote log sink, metrics.

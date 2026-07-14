@@ -35,7 +35,7 @@ type capture struct {
 func startBridge(t *testing.T, cfg *config.Config) (addr string, cleanup func()) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled)
+	st, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled, cfg.Logging.LogRejections())
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -223,6 +223,57 @@ func TestRejectsUnroutedRecipient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection for unrouted recipient")
 	}
+}
+
+func TestRejectionsRecorded(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer ts.Close()
+	cfg := baseConfig(t, config.ModeAsync, ts.URL, "")
+	addr, cleanup := startBridge(t, cfg)
+	defer cleanup()
+
+	// Bad auth, then good auth but an unrouted recipient.
+	conn, _ := net.Dial("tcp", addr)
+	c, _ := smtp.NewClient(conn, "localhost")
+	c.Auth(smtp.PlainAuth("", "alice", "wrong", "localhost"))
+	c.Close()
+	_ = send(t, addr, "s@x.com", "nobody@elsewhere.net", "Subject: x\r\n\r\nx\r\n")
+
+	// Read rejections back from the same database.
+	reader, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled, cfg.Logging.LogRejections())
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reader.Close()
+	rows, err := reader.RecentRejections(10)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	stages := map[string]store.Rejection{}
+	for _, r := range rows {
+		stages[r.Stage] = r
+	}
+	if _, ok := stages["auth"]; !ok {
+		t.Errorf("expected an auth rejection, got stages %v", keys(stages))
+	}
+	rc, ok := stages["rcpt"]
+	if !ok {
+		t.Fatalf("expected an rcpt rejection, got stages %v", keys(stages))
+	}
+	if rc.Rcpt != "nobody@elsewhere.net" {
+		t.Errorf("rcpt rejection rcpt = %q, want nobody@elsewhere.net", rc.Rcpt)
+	}
+	if rc.Code != 550 {
+		t.Errorf("rcpt rejection code = %d, want 550", rc.Code)
+	}
+}
+
+func keys(m map[string]store.Rejection) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestBadAuthRejected(t *testing.T) {

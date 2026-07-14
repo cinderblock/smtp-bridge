@@ -41,6 +41,11 @@ auth:
 logging:
   enabled: true
   database: "./smtp-bridge.db"
+  # Persist rejected requests (envelope metadata + reason, no message bodies) so
+  # you can debug misconfigured senders with `smtp-bridge rejections`. Rejections
+  # are always logged to stderr regardless; this only controls DB persistence.
+  # Defaults to true; set false to disable.
+  log_rejections: true
 
 # Global delivery defaults. Individual routes may override `mode`.
 delivery:

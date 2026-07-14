@@ -13,13 +13,16 @@ import (
 
 // Store wraps the SQLite database.
 type Store struct {
-	db         *sql.DB
-	logContent bool
+	db            *sql.DB
+	logContent    bool
+	logRejections bool
 }
 
 // Open opens (creating if needed) the database at path and runs migrations.
-// logContent controls whether message bodies/metadata are written to the log.
-func Open(path string, logContent bool) (*Store, error) {
+// logContent controls whether message bodies/metadata are written to the log;
+// logRejections controls whether rejected requests are persisted for later
+// inspection (envelope metadata only — no message bodies).
+func Open(path string, logContent, logRejections bool) (*Store, error) {
 	// Busy timeout + WAL keep the single-writer queue smooth under concurrency.
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -27,7 +30,7 @@ func Open(path string, logContent bool) (*Store, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	db.SetMaxOpenConns(1) // serialize writes; SQLite is single-writer
-	s := &Store{db: db, logContent: logContent}
+	s := &Store{db: db, logContent: logContent, logRejections: logRejections}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -75,6 +78,19 @@ CREATE TABLE IF NOT EXISTS queue (
 	created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_queue_next ON queue(next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS rejections (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	at          INTEGER NOT NULL,
+	stage       TEXT NOT NULL,
+	code        INTEGER,
+	remote_addr TEXT,
+	username    TEXT,
+	from_addr   TEXT,
+	rcpt        TEXT,
+	reason      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rejections_at ON rejections(at);
 `
 	_, err := s.db.Exec(schema)
 	if err != nil {
@@ -128,6 +144,58 @@ func (s *Store) LogDelivery(messageID, route string, attempt, statusCode int, su
 		messageID, route, attempt, time.Now().UnixMilli(), statusCode, boolToInt(success), errMsg,
 	)
 	return err
+}
+
+// Rejection records a request the server refused, for later debugging.
+type Rejection struct {
+	At         time.Time
+	Stage      string // connect | auth | mail | rcpt | data
+	Code       int    // SMTP reply code
+	RemoteAddr string
+	Username   string
+	From       string
+	Rcpt       string
+	Reason     string
+}
+
+// LogRejection persists a rejected request. It is a no-op when rejection
+// logging is disabled. Independent of message-content logging.
+func (s *Store) LogRejection(r Rejection) error {
+	if !s.logRejections {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO rejections (at, stage, code, remote_addr, username, from_addr, rcpt, reason)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		r.At.UnixMilli(), r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason,
+	)
+	if err != nil {
+		return fmt.Errorf("log rejection: %w", err)
+	}
+	return nil
+}
+
+// RecentRejections returns up to limit rejections, most recent first.
+func (s *Store) RecentRejections(limit int) ([]Rejection, error) {
+	rows, err := s.db.Query(
+		`SELECT at, stage, code, remote_addr, username, from_addr, rcpt, reason
+		 FROM rejections ORDER BY at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Rejection
+	for rows.Next() {
+		var r Rejection
+		var atMillis int64
+		if err := rows.Scan(&atMillis, &r.Stage, &r.Code, &r.RemoteAddr, &r.Username, &r.From, &r.Rcpt, &r.Reason); err != nil {
+			return nil, err
+		}
+		r.At = time.UnixMilli(atMillis)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // Job is a queued async delivery.

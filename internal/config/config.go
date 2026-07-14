@@ -75,7 +75,14 @@ type User struct {
 type Logging struct {
 	Enabled  bool   `yaml:"enabled"`
 	Database string `yaml:"database"`
+	// Rejections persists refused requests (envelope metadata only) for
+	// debugging. Defaults to true; set to false to disable. Pointer so an
+	// unset value is distinguishable from an explicit false.
+	Rejections *bool `yaml:"log_rejections"`
 }
+
+// LogRejections reports whether rejection logging is enabled (default true).
+func (l Logging) LogRejections() bool { return l.Rejections == nil || *l.Rejections }
 
 // Mode is the webhook delivery model.
 type Mode string
