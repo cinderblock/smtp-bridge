@@ -208,6 +208,39 @@ func (s *Store) GetMessage(id string) (*Message, error) {
 	return &m, nil
 }
 
+// DeleteMessages removes the given messages (and their delivery rows) by id,
+// returning how many message rows were deleted.
+func (s *Store) DeleteMessages(ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+	in := "(" + strings.Join(ph, ",") + ")"
+	s.db.Exec(`DELETE FROM deliveries WHERE message_id IN `+in, args...)
+	res, err := s.db.Exec(`DELETE FROM messages WHERE id IN `+in, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete messages: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// DeleteAllMessages clears the entire message log (and delivery rows).
+func (s *Store) DeleteAllMessages() (int64, error) {
+	s.db.Exec(`DELETE FROM deliveries`)
+	res, err := s.db.Exec(`DELETE FROM messages`)
+	if err != nil {
+		return 0, fmt.Errorf("delete all messages: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // Rejection records a request the server refused, for later debugging.
 type Rejection struct {
 	At         time.Time

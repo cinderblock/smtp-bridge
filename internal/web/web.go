@@ -1,7 +1,7 @@
-// Package web serves a small read-only, unauthenticated HTML view of stored
-// messages and rejections — intended for localhost / SSH-tunnel visibility so you
-// don't need the CLI. It never mutates state and never renders untrusted HTML as
-// live markup (bodies are shown as escaped source).
+// Package web serves a small, unauthenticated HTML view of stored messages and
+// rejections — intended for localhost / SSH-tunnel visibility so you don't need
+// the CLI. It can view and delete captured messages but never edits config, and
+// never renders untrusted HTML as live markup (bodies are shown as escaped source).
 package web
 
 import (
@@ -35,8 +35,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.handleList)
 	mux.HandleFunc("GET /message/{id}", s.handleMessage)
 	mux.HandleFunc("GET /message/{id}/raw", s.handleRaw)
+	mux.HandleFunc("POST /delete", s.handleDelete)
 	mux.HandleFunc("GET /rejections", s.handleRejections)
 	return mux
+}
+
+// handleDelete drops selected messages (form field "id", repeated) or all of
+// them ("all=1"), then redirects back to the list.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if r.PostForm.Get("all") != "" {
+		if _, err := s.store.DeleteAllMessages(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if ids := r.PostForm["id"]; len(ids) > 0 {
+		if _, err := s.store.DeleteMessages(ids); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +158,10 @@ pre{white-space:pre-wrap;word-break:break-word;background:#8881;padding:.75rem;b
 .empty{opacity:.6;margin-top:2rem}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .9rem;margin:1rem 0}
 .kv dt{opacity:.7}.kv dd{margin:0;word-break:break-word}
+.toolbar{margin:1rem 0;display:flex;gap:.5rem;align-items:center}
+button{font:inherit;padding:.35rem .7rem;border:1px solid #8886;border-radius:6px;background:Canvas;cursor:pointer}
+button:hover{background:#8881}
+button.danger{border-color:#c0392b88;color:#c0392b}
 </style></head><body>
 <header><h1>smtp-bridge</h1><nav>
 <a href="/" {{if eq .Nav "messages"}}class="on"{{end}}>Messages</a>
@@ -145,19 +171,32 @@ pre{white-space:pre-wrap;word-break:break-word;background:#8881;padding:.75rem;b
 {{define "bottom"}}</body></html>{{end}}
 
 {{define "list"}}{{template "top" .}}
-{{if .Messages}}<table><thead><tr>
+{{if .Messages}}
+<form method="post" action="/delete">
+<p class="toolbar">
+<button type="submit">Delete selected</button>
+<button type="submit" name="all" value="1" class="danger" onclick="return confirm('Delete ALL messages?')">Delete all</button>
+</p>
+<table><thead><tr>
+<th><input type="checkbox" aria-label="select all" onclick="for(const c of this.closest('table').querySelectorAll('input[name=id]'))c.checked=this.checked"></th>
 <th>Received</th><th>User</th><th>Route</th><th>From</th><th>To</th><th>Subject</th><th>Size</th></tr></thead><tbody>
 {{range .Messages}}<tr>
+<td><input type="checkbox" name="id" value="{{.ID}}"></td>
 <td class="mono"><a href="/message/{{.ID}}">{{ts .ReceivedAt}}</a></td>
 <td>{{.Username}}</td><td>{{.Route}}</td>
 <td class="mono">{{.From}}</td><td class="mono">{{.Rcpt}}</td>
 <td>{{.Subject}}</td><td class="muted">{{.Size}}</td></tr>{{end}}
 </tbody></table>
+</form>
 {{else}}<p class="empty">No messages logged yet.</p>{{end}}
 {{template "bottom" .}}{{end}}
 
 {{define "detail"}}{{template "top" .}}
-<p style="margin-top:1rem"><a href="/">&larr; all messages</a></p>
+<p class="toolbar"><a href="/">&larr; all messages</a>
+<form method="post" action="/delete" style="display:inline">
+<input type="hidden" name="id" value="{{.M.ID}}">
+<button type="submit" class="danger" onclick="return confirm('Delete this message?')">Delete</button>
+</form></p>
 <dl class="kv">
 <dt>Received</dt><dd class="mono">{{ts .M.ReceivedAt}}</dd>
 <dt>User</dt><dd>{{.M.Username}}</dd>

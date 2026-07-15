@@ -129,7 +129,7 @@ func runServer() {
 	if cfg.Web.Enabled() {
 		webSrv = &http.Server{Addr: cfg.Web.Listen, Handler: web.New(st).Handler()}
 		go func() {
-			log.Info("web UI listening (read-only, NO AUTH — keep it off public interfaces)", "addr", cfg.Web.Listen)
+			log.Info("web UI listening (NO AUTH — keep it off public interfaces)", "addr", cfg.Web.Listen)
 			if err := webSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Error("web UI stopped", "err", err)
 			}

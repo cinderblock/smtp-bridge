@@ -84,6 +84,41 @@ func TestRejectionsView(t *testing.T) {
 	}
 }
 
+func post(t *testing.T, h http.Handler, path, form string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestDeleteSelected(t *testing.T) {
+	s, st := newTestServer(t)
+	h := s.Handler()
+	rr := post(t, h, "/delete", "id=m1")
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect, got %d", rr.Code)
+	}
+	msgs, _ := st.RecentMessages(10)
+	if len(msgs) != 0 {
+		t.Errorf("m1 should be gone, %d left", len(msgs))
+	}
+}
+
+func TestDeleteAll(t *testing.T) {
+	s, st := newTestServer(t)
+	// add a second message so "all" clearly clears more than one
+	st.LogMessage(store.MessageLog{ID: "m2", ReceivedAt: time.Now(), From: "b@c", Rcpt: []string{"x@y"}, Size: 1, Raw: []byte("Subject: two\r\n\r\nx")})
+	rr := post(t, s.Handler(), "/delete", "all=1")
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect, got %d", rr.Code)
+	}
+	if msgs, _ := st.RecentMessages(10); len(msgs) != 0 {
+		t.Errorf("all messages should be gone, %d left", len(msgs))
+	}
+}
+
 // HTML bodies must be shown as escaped source, never rendered as live markup.
 func TestHTMLBodyIsEscaped(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "x.db"), true, true)

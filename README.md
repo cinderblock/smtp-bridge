@@ -105,17 +105,17 @@ Disable DB persistence with `logging.log_rejections: false` (stderr logs remain)
 
 ## Status web UI (optional)
 
-Set `web.listen` to run a small **read-only, unauthenticated** web view of stored
-messages and rejections — handy for eyeballing captured mail without the CLI:
+Set `web.listen` to run a small **unauthenticated** web view of stored messages
+and rejections — handy for eyeballing captured mail without the CLI:
 
 ```yaml
 web:
   listen: "127.0.0.1:8025"
 ```
 
-It only reads the database (never mutates config or state) and shows message
-bodies as escaped source (never executes untrusted HTML). Because it has **no
-auth**, bind it to loopback only. In a container, bind `:8025` inside and publish
+It lets you view messages and select/bulk-delete captured ones (it never edits
+config) and shows message bodies as escaped source (never executes untrusted
+HTML). Because it has **no auth**, bind it to loopback only. In a container, bind `:8025` inside and publish
 it to the host loopback (`127.0.0.1:8025:8025`), then reach it via an SSH tunnel:
 
 ```sh

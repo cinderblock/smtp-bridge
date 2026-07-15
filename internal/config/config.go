@@ -48,8 +48,9 @@ type Config struct {
 	Routes   []Route  `yaml:"routes"`
 }
 
-// Web configures the optional read-only, UNAUTHENTICATED status web UI. Bind it
-// only to loopback (or publish it loopback-only) — it has no access control.
+// Web configures the optional, UNAUTHENTICATED status web UI (view + delete
+// captured messages; it does not edit config). Bind it only to loopback (or
+// publish it loopback-only) — it has no access control.
 type Web struct {
 	Listen string `yaml:"listen"` // host:port, e.g. "127.0.0.1:8025"; empty = disabled
 }
