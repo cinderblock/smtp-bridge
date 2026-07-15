@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/cinderblock/smtp-bridge/internal/server"
 	"github.com/cinderblock/smtp-bridge/internal/store"
 	"github.com/cinderblock/smtp-bridge/internal/tlsconf"
+	"github.com/cinderblock/smtp-bridge/internal/web"
 )
 
 func main() {
@@ -122,10 +124,22 @@ func runServer() {
 		os.Exit(1)
 	}
 
+	// Optional read-only status web UI (no auth — keep it loopback-only).
+	var webSrv *http.Server
+	if cfg.Web.Enabled() {
+		webSrv = &http.Server{Addr: cfg.Web.Listen, Handler: web.New(st).Handler()}
+		go func() {
+			log.Info("web UI listening (read-only, NO AUTH — keep it off public interfaces)", "addr", cfg.Web.Listen)
+			if err := webSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error("web UI stopped", "err", err)
+			}
+		}()
+	}
+
 	log.Info("smtp-bridge starting",
 		"hostname", cfg.Hostname, "listeners", len(cfg.Listeners),
 		"cert_mode", string(cfg.TLS.Mode), "logging", cfg.Logging.Enabled,
-		"routes", len(cfg.Routes))
+		"web", cfg.Web.Listen, "routes", len(cfg.Routes))
 	if err := srv.Serve(); err != nil {
 		log.Error("failed to start listeners", "err", err)
 		os.Exit(1)
@@ -134,6 +148,9 @@ func runServer() {
 	<-ctx.Done()
 	log.Info("shutting down")
 	srv.Close()
+	if webSrv != nil {
+		webSrv.Close()
+	}
 }
 
 // runRejections prints recently rejected requests from the database, newest

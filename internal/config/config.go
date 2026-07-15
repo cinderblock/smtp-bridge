@@ -43,9 +43,19 @@ type Config struct {
 	TLS      TLS      `yaml:"tls"`
 	Auth     Auth     `yaml:"auth"`
 	Logging  Logging  `yaml:"logging"`
+	Web      Web      `yaml:"web"`
 	Delivery Delivery `yaml:"delivery"`
 	Routes   []Route  `yaml:"routes"`
 }
+
+// Web configures the optional read-only, UNAUTHENTICATED status web UI. Bind it
+// only to loopback (or publish it loopback-only) — it has no access control.
+type Web struct {
+	Listen string `yaml:"listen"` // host:port, e.g. "127.0.0.1:8025"; empty = disabled
+}
+
+// Enabled reports whether the web UI should run.
+func (w Web) Enabled() bool { return w.Listen != "" }
 
 // TLSMode is a per-listener transport-security mode.
 type TLSMode string

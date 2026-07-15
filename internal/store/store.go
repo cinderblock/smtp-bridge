@@ -182,6 +182,32 @@ func (s *Store) RecentMessages(limit int) ([]MessageSummary, error) {
 	return out, rows.Err()
 }
 
+// Message is a full stored message including its raw body.
+type Message struct {
+	MessageSummary
+	RemoteAddr string
+	Raw        []byte
+}
+
+// GetMessage returns the full stored message by id, or nil if not found.
+func (s *Store) GetMessage(id string) (*Message, error) {
+	row := s.db.QueryRow(
+		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username, remote_addr, raw
+		 FROM messages WHERE id = ?`, id,
+	)
+	var m Message
+	var atMillis int64
+	err := row.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username, &m.RemoteAddr, &m.Raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.ReceivedAt = time.UnixMilli(atMillis)
+	return &m, nil
+}
+
 // Rejection records a request the server refused, for later debugging.
 type Rejection struct {
 	At         time.Time

@@ -61,6 +61,13 @@ logging:
   # Defaults to true; set false to disable.
   log_rejections: true
 
+# Optional read-only status web UI (view messages + rejections in a browser
+# instead of the CLI). It has NO authentication — bind it to loopback only, or in
+# a container publish it to the host loopback (e.g. compose `127.0.0.1:8025:8025`)
+# and reach it over an SSH tunnel. Empty/absent = disabled.
+web:
+  listen: "" # e.g. "127.0.0.1:8025"
+
 # Global delivery defaults. Individual routes may override `mode`.
 delivery:
   default_mode: "async"   # async = accept + durable retry; sync = 250 only on 2xx
