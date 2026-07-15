@@ -1,9 +1,18 @@
 # smtp-bridge configuration example.
 # Copy to config.yaml and edit. Run: smtp-bridge -config config.yaml
 
-# Address to listen on. 2525 is a safe unprivileged default; use :25 only if you
-# understand the implications and have the privileges/capabilities to bind it.
-listen: ":2525"
+# One or more listeners, each with its own transport-security mode:
+#   none      plaintext only; STARTTLS not advertised (trusted networks only)
+#   starttls  plaintext that advertises STARTTLS; clients upgrade in place (587/25/2525)
+#   implicit  TLS from the first byte, a.k.a. SMTPS (465 and non-standard TLS ports)
+# On a starttls listener AUTH requires STARTTLS first; set insecure_auth: true to
+# allow AUTH without it (only for legacy senders on a trusted path).
+listeners:
+  - { address: ":2525", tls: "starttls" }
+  # - { address: ":25",   tls: "starttls" }
+  # - { address: ":587",  tls: "starttls" }
+  # - { address: ":465",  tls: "implicit" }
+  # - { address: ":5465", tls: "implicit" }   # non-standard implicit-TLS port
 
 # Hostname announced in the SMTP greeting / EHLO.
 hostname: "smtp-bridge.local"
@@ -14,13 +23,22 @@ max_message_bytes: 26214400
 read_timeout: "60s"
 write_timeout: "60s"
 
-# STARTTLS. Leave cert_file/key_file empty to disable TLS (AUTH then travels in
-# the clear — only acceptable on trusted/loopback networks). Set required: true
-# to force STARTTLS before AUTH.
+# Certificate source shared by all TLS-enabled listeners.
+#   mode: none   no certificate (only `none` listeners allowed)
+#   mode: files  load a static cert_file/key_file you manage
+#   mode: auto   obtain + auto-renew via ACME DNS-01 (certmagic); no inbound port needed
 tls:
-  cert_file: ""
-  key_file: ""
-  required: false
+  mode: "none"
+  # --- mode: files ---
+  # cert_file: "/path/to/cert.pem"
+  # key_file:  "/path/to/key.pem"
+  # --- mode: auto (ACME DNS-01 via Cloudflare) ---
+  # hostnames: ["smtp.example.com"]   # cert names; must be on the Cloudflare account
+  # acme_email: "you@example.com"
+  # dns_provider: "cloudflare"
+  # cf_api_token: ""                  # or set $CLOUDFLARE_API_TOKEN (DNS:Edit scope)
+  # storage_path: "./certs"           # MUST persist across restarts (LE rate limits)
+  # ca_dir_url: ""                    # optional; e.g. LE staging while testing
 
 # AUTH is mandatory: at least one user must be defined. Each user sets exactly
 # one of password (plaintext) or password_bcrypt (a bcrypt hash, preferred).

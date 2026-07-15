@@ -19,6 +19,7 @@ import (
 	"github.com/cinderblock/smtp-bridge/internal/router"
 	"github.com/cinderblock/smtp-bridge/internal/server"
 	"github.com/cinderblock/smtp-bridge/internal/store"
+	"github.com/cinderblock/smtp-bridge/internal/tlsconf"
 )
 
 func main() {
@@ -68,22 +69,27 @@ func runServer() {
 	// Async delivery worker.
 	go d.RunWorker(ctx)
 
-	srv, err := server.New(cfg, rt, d, st, log, func() string { return uuid.NewString() })
+	// Build the shared TLS certificate source (may obtain a cert via ACME).
+	tlsConfig, err := tlsconf.Build(ctx, cfg.TLS, log)
+	if err != nil {
+		log.Error("tls setup error", "err", err)
+		os.Exit(1)
+	}
+
+	srv, err := server.New(cfg, rt, d, st, log, func() string { return uuid.NewString() }, tlsConfig)
 	if err != nil {
 		log.Error("server error", "err", err)
 		os.Exit(1)
 	}
 
-	go func() {
-		log.Info("smtp-bridge listening",
-			"addr", cfg.Listen, "hostname", cfg.Hostname,
-			"tls", cfg.TLS.Enabled(), "logging", cfg.Logging.Enabled,
-			"routes", len(cfg.Routes))
-		if err := srv.ListenAndServe(); err != nil {
-			log.Error("listener stopped", "err", err)
-			stop()
-		}
-	}()
+	log.Info("smtp-bridge starting",
+		"hostname", cfg.Hostname, "listeners", len(cfg.Listeners),
+		"cert_mode", string(cfg.TLS.Mode), "logging", cfg.Logging.Enabled,
+		"routes", len(cfg.Routes))
+	if err := srv.Serve(); err != nil {
+		log.Error("failed to start listeners", "err", err)
+		os.Exit(1)
+	}
 
 	<-ctx.Done()
 	log.Info("shutting down")

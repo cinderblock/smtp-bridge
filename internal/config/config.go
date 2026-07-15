@@ -34,11 +34,11 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Config is the root configuration object.
 type Config struct {
-	Listen          string   `yaml:"listen"`
-	Hostname        string   `yaml:"hostname"`
-	MaxMessageBytes int64    `yaml:"max_message_bytes"`
-	ReadTimeout     Duration `yaml:"read_timeout"`
-	WriteTimeout    Duration `yaml:"write_timeout"`
+	Listeners       []Listener `yaml:"listeners"`
+	Hostname        string     `yaml:"hostname"`
+	MaxMessageBytes int64      `yaml:"max_message_bytes"`
+	ReadTimeout     Duration   `yaml:"read_timeout"`
+	WriteTimeout    Duration   `yaml:"write_timeout"`
 
 	TLS      TLS      `yaml:"tls"`
 	Auth     Auth     `yaml:"auth"`
@@ -47,15 +47,60 @@ type Config struct {
 	Routes   []Route  `yaml:"routes"`
 }
 
-// TLS configures STARTTLS. When CertFile/KeyFile are empty, STARTTLS is disabled.
-type TLS struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	// Required forces clients to issue STARTTLS before AUTH/MAIL.
-	Required bool `yaml:"required"`
+// TLSMode is a per-listener transport-security mode.
+type TLSMode string
+
+const (
+	// TLSModeNone: plaintext only; STARTTLS not advertised. AUTH travels in the
+	// clear (only sensible on a trusted network).
+	TLSModeNone TLSMode = "none"
+	// TLSModeStartTLS: plaintext connection that advertises STARTTLS; clients
+	// upgrade in place (ports 587/25/2525).
+	TLSModeStartTLS TLSMode = "starttls"
+	// TLSModeImplicit: TLS from the first byte, a.k.a. SMTPS (port 465).
+	TLSModeImplicit TLSMode = "implicit"
+)
+
+// Listener is a single bound SMTP port with its own transport-security mode.
+type Listener struct {
+	Address string  `yaml:"address"` // e.g. ":587"
+	TLS     TLSMode `yaml:"tls"`     // none | starttls | implicit
+	// InsecureAuth permits AUTH on a non-TLS connection for a starttls listener
+	// (i.e. AUTH without first issuing STARTTLS). Default false: AUTH requires
+	// TLS. Ignored for implicit (always TLS) and none (always insecure).
+	InsecureAuth bool `yaml:"insecure_auth"`
 }
 
-func (t TLS) Enabled() bool { return t.CertFile != "" && t.KeyFile != "" }
+// NeedsCert reports whether this listener requires a server certificate.
+func (l Listener) NeedsCert() bool {
+	return l.TLS == TLSModeStartTLS || l.TLS == TLSModeImplicit
+}
+
+// CertMode selects where the server certificate comes from.
+type CertMode string
+
+const (
+	CertModeNone  CertMode = "none"  // no certificate; only `none` listeners allowed
+	CertModeFiles CertMode = "files" // load cert_file/key_file
+	CertModeAuto  CertMode = "auto"  // obtain + auto-renew via ACME DNS-01 (certmagic)
+)
+
+// TLS configures the server certificate shared by all TLS-enabled listeners.
+type TLS struct {
+	Mode CertMode `yaml:"mode"`
+
+	// Mode == files
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+
+	// Mode == auto (ACME DNS-01)
+	Hostnames   []string `yaml:"hostnames"`    // certificate names, e.g. [smtp.example.com]
+	ACMEEmail   string   `yaml:"acme_email"`   // ACME account contact
+	DNSProvider string   `yaml:"dns_provider"` // currently only "cloudflare"
+	CFAPIToken  string   `yaml:"cf_api_token"` // Cloudflare token; falls back to $CLOUDFLARE_API_TOKEN
+	CADirURL    string   `yaml:"ca_dir_url"`   // optional ACME directory override (e.g. LE staging)
+	StoragePath string   `yaml:"storage_path"` // where obtained certs are cached (MUST persist)
+}
 
 // Auth controls who may submit mail.
 type Auth struct {
@@ -170,8 +215,24 @@ func (c *Config) Prepare() error {
 }
 
 func (c *Config) applyDefaults() {
-	if c.Listen == "" {
-		c.Listen = ":2525"
+	if len(c.Listeners) == 0 {
+		c.Listeners = []Listener{{Address: ":2525", TLS: TLSModeNone}}
+	}
+	for i := range c.Listeners {
+		if c.Listeners[i].TLS == "" {
+			c.Listeners[i].TLS = TLSModeNone
+		}
+	}
+	if c.TLS.Mode == "" {
+		c.TLS.Mode = CertModeNone
+	}
+	if c.TLS.Mode == CertModeAuto {
+		if c.TLS.DNSProvider == "" {
+			c.TLS.DNSProvider = "cloudflare"
+		}
+		if c.TLS.StoragePath == "" {
+			c.TLS.StoragePath = "./certs"
+		}
 	}
 	if c.Hostname == "" {
 		c.Hostname = "localhost"
@@ -212,6 +273,54 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// needsCert reports whether any listener requires a server certificate.
+func (c *Config) needsCert() bool {
+	for _, l := range c.Listeners {
+		if l.NeedsCert() {
+			return true
+		}
+	}
+	return false
+}
+
+// validateTLS checks listeners and the certificate source are mutually consistent.
+func (c *Config) validateTLS() error {
+	for i, l := range c.Listeners {
+		if l.Address == "" {
+			return fmt.Errorf("listeners[%d]: address is required", i)
+		}
+		switch l.TLS {
+		case TLSModeNone, TLSModeStartTLS, TLSModeImplicit:
+		default:
+			return fmt.Errorf("listeners[%q]: invalid tls %q (want none, starttls, or implicit)", l.Address, l.TLS)
+		}
+	}
+	needCert := c.needsCert()
+	switch c.TLS.Mode {
+	case CertModeNone:
+		if needCert {
+			return fmt.Errorf("a listener uses starttls/implicit but tls.mode is none — set tls.mode to files or auto")
+		}
+	case CertModeFiles:
+		if c.TLS.CertFile == "" || c.TLS.KeyFile == "" {
+			return fmt.Errorf("tls.mode is files but tls.cert_file/key_file are not set")
+		}
+	case CertModeAuto:
+		if len(c.TLS.Hostnames) == 0 {
+			return fmt.Errorf("tls.mode is auto but tls.hostnames is empty")
+		}
+		if c.TLS.DNSProvider != "cloudflare" {
+			return fmt.Errorf("tls.dns_provider %q unsupported (only cloudflare)", c.TLS.DNSProvider)
+		}
+		if c.TLS.CFAPIToken == "" && os.Getenv("CLOUDFLARE_API_TOKEN") == "" {
+			return fmt.Errorf("tls.mode is auto with cloudflare but no token (set tls.cf_api_token or $CLOUDFLARE_API_TOKEN)")
+		}
+	default:
+		return fmt.Errorf("tls.mode %q invalid (want none, files, or auto)", c.TLS.Mode)
+	}
+	return nil
+}
+
 // Validate checks for a usable configuration.
 func (c *Config) Validate() error {
 	if len(c.Auth.Users) == 0 {
@@ -238,8 +347,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("auth.allow_ips: %q is not a valid CIDR: %w", cidr, err)
 		}
 	}
-	if c.TLS.Required && !c.TLS.Enabled() {
-		return fmt.Errorf("tls.required is set but tls.cert_file/key_file are not configured")
+	if err := c.validateTLS(); err != nil {
+		return err
 	}
 	if len(c.Routes) == 0 {
 		return fmt.Errorf("routes: at least one route is required")

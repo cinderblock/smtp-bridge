@@ -23,6 +23,7 @@ import (
 	"github.com/cinderblock/smtp-bridge/internal/router"
 	"github.com/cinderblock/smtp-bridge/internal/server"
 	"github.com/cinderblock/smtp-bridge/internal/store"
+	"github.com/cinderblock/smtp-bridge/internal/tlsconf"
 )
 
 type capture struct {
@@ -48,17 +49,21 @@ func startBridge(t *testing.T, cfg *config.Config) (addr string, cleanup func())
 	ctx, cancel := context.WithCancel(context.Background())
 	go d.RunWorker(ctx)
 
+	tlsConfig, err := tlsconf.Build(ctx, cfg.TLS, log)
+	if err != nil {
+		cancel()
+		t.Fatalf("tls build: %v", err)
+	}
+
 	var n int
-	srv, err := server.New(cfg, rt, d, st, log, func() string { n++; return "id-" + strconv.Itoa(n) })
+	srv, err := server.New(cfg, rt, d, st, log, func() string { n++; return "id-" + strconv.Itoa(n) }, tlsConfig)
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	if err := srv.Serve(); err != nil {
+		t.Fatalf("serve: %v", err)
 	}
-	go srv.Serve(ln)
-	return ln.Addr().String(), func() {
+	return srv.Addrs()[0].String(), func() {
 		cancel()
 		srv.Close()
 		st.Close()
@@ -101,11 +106,11 @@ func send(t *testing.T, addr string, from string, to string, body string) error 
 
 func baseConfig(t *testing.T, mode config.Mode, webhookURL, secret string) *config.Config {
 	cfg := &config.Config{
-		Listen:   "127.0.0.1:0",
-		Hostname: "localhost",
-		Auth:     config.Auth{Users: []config.User{{Username: "alice", Password: "s3cret"}}},
-		Logging:  config.Logging{Enabled: true, Database: filepath.Join(t.TempDir(), "test.db")},
-		Delivery: config.Delivery{DefaultMode: mode, MaxRetries: 3},
+		Listeners: []config.Listener{{Address: "127.0.0.1:0", TLS: config.TLSModeNone}},
+		Hostname:  "localhost",
+		Auth:      config.Auth{Users: []config.User{{Username: "alice", Password: "s3cret"}}},
+		Logging:   config.Logging{Enabled: true, Database: filepath.Join(t.TempDir(), "test.db")},
+		Delivery:  config.Delivery{DefaultMode: mode, MaxRetries: 3},
 		Routes: []config.Route{{
 			Name:    "app",
 			Match:   config.Match{RcptDomain: "hooks.example.com"},

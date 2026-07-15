@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,8 +38,19 @@ type Backend struct {
 	newID     func() string
 }
 
-// New builds the go-smtp server ready to ListenAndServe.
-func New(cfg *config.Config, rt *router.Router, d *delivery.Deliverer, st *store.Store, log *slog.Logger, newID func() string) (*smtp.Server, error) {
+// Server runs the SMTP backend across one or more listeners (each with its own
+// TLS mode), all sharing a single authentication/routing backend.
+type Server struct {
+	be        *Backend
+	tlsConfig *tls.Config
+	log       *slog.Logger
+	servers   []*smtp.Server
+	lns       []net.Listener
+}
+
+// New builds the multi-listener server. tlsConfig is the shared certificate
+// source (from internal/tlsconf); it may be nil only if every listener is plain.
+func New(cfg *config.Config, rt *router.Router, d *delivery.Deliverer, st *store.Store, log *slog.Logger, newID func() string, tlsConfig *tls.Config) (*Server, error) {
 	users := make(map[string]config.User, len(cfg.Auth.Users))
 	for _, u := range cfg.Auth.Users {
 		users[u.Username] = u
@@ -56,25 +68,74 @@ func New(cfg *config.Config, rt *router.Router, d *delivery.Deliverer, st *store
 		cfg: cfg, router: rt, deliverer: d, store: st, log: log,
 		users: users, allowNets: nets, newID: newID,
 	}
+	return &Server{be: be, tlsConfig: tlsConfig, log: log}, nil
+}
 
-	s := smtp.NewServer(be)
-	s.Addr = cfg.Listen
-	s.Domain = cfg.Hostname
-	s.ReadTimeout = cfg.ReadTimeout.D()
-	s.WriteTimeout = cfg.WriteTimeout.D()
-	s.MaxMessageBytes = cfg.MaxMessageBytes
-	s.MaxRecipients = 100
-	// AUTH before STARTTLS is permitted unless TLS is explicitly required.
-	s.AllowInsecureAuth = !cfg.TLS.Required
+// newSMTPServer builds a go-smtp server for one listener sharing the backend.
+func (s *Server) newSMTPServer(l config.Listener) *smtp.Server {
+	cfg := s.be.cfg
+	srv := smtp.NewServer(s.be)
+	srv.Domain = cfg.Hostname
+	srv.ReadTimeout = cfg.ReadTimeout.D()
+	srv.WriteTimeout = cfg.WriteTimeout.D()
+	srv.MaxMessageBytes = cfg.MaxMessageBytes
+	srv.MaxRecipients = 100
 
-	if cfg.TLS.Enabled() {
-		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load TLS keypair: %w", err)
-		}
-		s.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	switch l.TLS {
+	case config.TLSModeStartTLS:
+		srv.TLSConfig = s.tlsConfig
+		// AUTH requires STARTTLS first unless the listener opts into insecure AUTH.
+		srv.AllowInsecureAuth = l.InsecureAuth
+	case config.TLSModeImplicit:
+		srv.TLSConfig = s.tlsConfig
+		// The connection is already TLS (wrapped listener), so AUTH is secure.
+		srv.AllowInsecureAuth = false
+	default: // TLSModeNone
+		srv.AllowInsecureAuth = true // no TLS available; AUTH must be permitted plaintext
 	}
-	return s, nil
+	return srv
+}
+
+// Serve binds and starts every configured listener. It returns once all are
+// bound (or on the first bind error); each listener is then served in its own
+// goroutine until Close.
+func (s *Server) Serve() error {
+	for _, l := range s.be.cfg.Listeners {
+		ln, err := net.Listen("tcp", l.Address)
+		if err != nil {
+			s.Close()
+			return fmt.Errorf("listen %s: %w", l.Address, err)
+		}
+		if l.TLS == config.TLSModeImplicit {
+			ln = tls.NewListener(ln, s.tlsConfig)
+		}
+		srv := s.newSMTPServer(l)
+		s.servers = append(s.servers, srv)
+		s.lns = append(s.lns, ln)
+		s.log.Info("listening", "address", ln.Addr().String(), "tls", string(l.TLS))
+		go func(srv *smtp.Server, ln net.Listener, addr string) {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+				s.log.Error("listener stopped", "address", addr, "err", err)
+			}
+		}(srv, ln, l.Address)
+	}
+	return nil
+}
+
+// Addrs returns the actual bound addresses (useful when a listener used :0).
+func (s *Server) Addrs() []net.Addr {
+	out := make([]net.Addr, len(s.lns))
+	for i, ln := range s.lns {
+		out[i] = ln.Addr()
+	}
+	return out
+}
+
+// Close stops all listeners.
+func (s *Server) Close() {
+	for _, srv := range s.servers {
+		srv.Close()
+	}
 }
 
 // NewSession enforces the optional IP allowlist and starts a session.

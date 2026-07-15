@@ -34,7 +34,12 @@ sender ──SMTP (AUTH + optional STARTTLS)──▶ smtp-bridge
 
 - **AUTH is mandatory** — the server never acts as an open relay. PLAIN and LOGIN
   SASL mechanisms are supported; passwords may be plaintext or bcrypt hashes.
-- **STARTTLS** is supported (optional, or required).
+- **Multiple listeners**, each with its own TLS mode — `none` (plaintext),
+  `starttls` (explicit upgrade, ports 587/25/2525), or `implicit` (TLS from the
+  first byte, a.k.a. SMTPS, port 465). All share one auth/routing backend.
+- **TLS certificate** from one of three sources (`tls.mode`): `none`, static
+  `files`, or `auto` — automatic ACME **DNS-01** issuance + renewal via Cloudflare
+  (built on certmagic), which needs no inbound HTTP port.
 - **Routing** matches each recipient by exact address, domain, or local-part
   (ignoring any `+tag` subaddress). Unrouted recipients are rejected at `RCPT`.
 - **Two delivery modes, selectable per route:**
@@ -146,6 +151,8 @@ GOOS=windows GOARCH=amd64 go build -o dist/smtp-bridge-windows-amd64.exe ./cmd/s
 
 ## Status / roadmap
 
-Working: AUTH, STARTTLS, routing, sync + async delivery, retries, HMAC signing,
-SQLite logging + durable queue, rejected-request logging + `rejections` viewer.
-Planned: Dockerfile / goreleaser, systemd unit, optional D1 remote log sink, metrics.
+Working: mandatory AUTH, multi-listener (none/starttls/implicit), TLS via static
+files or automatic ACME DNS-01 (Cloudflare), routing, sync + async delivery,
+retries, HMAC signing, SQLite logging + durable queue, rejected-request logging +
+`rejections` viewer. Planned: Dockerfile / goreleaser, systemd unit, optional D1
+remote log sink, metrics.
