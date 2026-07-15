@@ -6,13 +6,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/cinderblock/smtp-bridge/internal/config"
 	"github.com/cinderblock/smtp-bridge/internal/delivery"
@@ -23,12 +26,43 @@ import (
 )
 
 func main() {
-	// Subcommands come before flags: `smtp-bridge rejections [-config ...] [-n N]`.
-	if len(os.Args) > 1 && os.Args[1] == "rejections" {
-		runRejections(os.Args[2:])
-		return
+	// Subcommands come before flags.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "rejections":
+			runRejections(os.Args[2:])
+			return
+		case "messages":
+			runMessages(os.Args[2:])
+			return
+		case "hash":
+			runHash(os.Args[2:])
+			return
+		}
 	}
 	runServer()
+}
+
+// runHash prints a bcrypt hash of a password, for use as a route's
+// password_bcrypt. Reads the password from the first arg or from stdin.
+func runHash(argv []string) {
+	var pw string
+	if len(argv) > 0 && argv[0] != "" {
+		pw = argv[0]
+	} else {
+		b, _ := io.ReadAll(os.Stdin)
+		pw = strings.TrimRight(string(b), "\r\n")
+	}
+	if pw == "" {
+		fmt.Fprintln(os.Stderr, "usage: smtp-bridge hash <password>   (or pipe the password on stdin)")
+		os.Exit(1)
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hash error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(h))
 }
 
 func runServer() {
@@ -136,5 +170,41 @@ func runRejections(argv []string) {
 		r := rows[i]
 		fmt.Printf("%s  stage=%-5s code=%d  ip=%s user=%q from=%q rcpt=%q  reason=%q\n",
 			r.At.Format(time.RFC3339), r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason)
+	}
+}
+
+// runMessages prints recently logged messages (including capture-only routes),
+// newest first — a quick way to see what mail has arrived.
+func runMessages(argv []string) {
+	fs := flag.NewFlagSet("messages", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to the YAML config file")
+	n := fs.Int("n", 50, "number of recent messages to show")
+	fs.Parse(argv)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		os.Exit(1)
+	}
+	st, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled, cfg.Logging.LogRejections())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "store error:", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	rows, err := st.RecentMessages(*n)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "query error:", err)
+		os.Exit(1)
+	}
+	if len(rows) == 0 {
+		fmt.Println("no messages logged (is logging.enabled true?)")
+		return
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		m := rows[i]
+		fmt.Printf("%s  user=%q route=%q from=%q rcpt=%q size=%d  subject=%q\n",
+			m.ReceivedAt.Format(time.RFC3339), m.Username, m.Route, m.From, m.Rcpt, m.Size, m.Subject)
 	}
 }

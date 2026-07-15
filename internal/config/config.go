@@ -102,18 +102,10 @@ type TLS struct {
 	StoragePath string   `yaml:"storage_path"` // where obtained certs are cached (MUST persist)
 }
 
-// Auth controls who may submit mail.
+// Auth holds network-level access control. SMTP credentials are per-route
+// (see Route) — a sender authenticates as a route.
 type Auth struct {
-	Users    []User   `yaml:"users"`
 	AllowIPs []string `yaml:"allow_ips"` // optional CIDR allowlist, applied on top of AUTH
-}
-
-// User is a single SMTP AUTH credential. Provide exactly one of Password or
-// PasswordBcrypt.
-type User struct {
-	Username       string `yaml:"username"`
-	Password       string `yaml:"password"`
-	PasswordBcrypt string `yaml:"password_bcrypt"`
 }
 
 // Logging controls the optional (opt-out) message log.
@@ -146,14 +138,28 @@ type Delivery struct {
 	Concurrency  int      `yaml:"concurrency"`
 }
 
-// Route maps matching recipients to a webhook.
+// Route bundles a per-route SMTP AUTH credential, a recipient match, and an
+// optional webhook. A sender authenticates as the route's user and may deliver
+// only to routes that credential owns (and whose recipient match passes).
 type Route struct {
-	Name    string       `yaml:"name"`
+	Name string `yaml:"name"`
+
+	// Per-route credential. A sender authenticates as this route; provide
+	// exactly one of Password or PasswordBcrypt.
+	Username       string `yaml:"username"`
+	Password       string `yaml:"password"`
+	PasswordBcrypt string `yaml:"password_bcrypt"`
+
 	Match   Match        `yaml:"match"`
-	Webhook Webhook      `yaml:"webhook"`
-	Mode    Mode         `yaml:"mode"` // "" = use Delivery.DefaultMode
+	Webhook Webhook      `yaml:"webhook"` // optional: empty url = capture-only
+	Mode    Mode         `yaml:"mode"`    // "" = use Delivery.DefaultMode
 	Include IncludeRules `yaml:"include"`
 }
+
+// HasWebhook reports whether the route forwards to a webhook. A route with no
+// webhook URL is capture-only: matching mail is accepted and logged but not
+// delivered anywhere (until an endpoint is configured).
+func (r Route) HasWebhook() bool { return r.Webhook.URL != "" }
 
 // Match holds recipient conditions. Every non-empty field must match (AND).
 // A route with an empty Match matches every recipient (catch-all).
@@ -323,25 +329,6 @@ func (c *Config) validateTLS() error {
 
 // Validate checks for a usable configuration.
 func (c *Config) Validate() error {
-	if len(c.Auth.Users) == 0 {
-		return fmt.Errorf("auth.users: at least one user is required (AUTH is mandatory)")
-	}
-	names := map[string]bool{}
-	for i, u := range c.Auth.Users {
-		if u.Username == "" {
-			return fmt.Errorf("auth.users[%d]: username is required", i)
-		}
-		if u.Password == "" && u.PasswordBcrypt == "" {
-			return fmt.Errorf("auth.users[%q]: set password or password_bcrypt", u.Username)
-		}
-		if u.Password != "" && u.PasswordBcrypt != "" {
-			return fmt.Errorf("auth.users[%q]: set only one of password or password_bcrypt", u.Username)
-		}
-		if names[u.Username] {
-			return fmt.Errorf("auth.users: duplicate username %q", u.Username)
-		}
-		names[u.Username] = true
-	}
 	for _, cidr := range c.Auth.AllowIPs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("auth.allow_ips: %q is not a valid CIDR: %w", cidr, err)
@@ -354,6 +341,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("routes: at least one route is required")
 	}
 	seen := map[string]bool{}
+	creds := map[string]string{} // username -> credential, to catch conflicts
 	for i, r := range c.Routes {
 		if r.Name == "" {
 			return fmt.Errorf("routes[%d]: name is required", i)
@@ -362,8 +350,28 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("routes: duplicate name %q", r.Name)
 		}
 		seen[r.Name] = true
-		if r.Webhook.URL == "" {
-			return fmt.Errorf("routes[%q]: webhook.url is required", r.Name)
+
+		// Per-route credential (AUTH is mandatory).
+		if r.Username == "" {
+			return fmt.Errorf("routes[%q]: username is required", r.Name)
+		}
+		if r.Password == "" && r.PasswordBcrypt == "" {
+			return fmt.Errorf("routes[%q]: set password or password_bcrypt", r.Name)
+		}
+		if r.Password != "" && r.PasswordBcrypt != "" {
+			return fmt.Errorf("routes[%q]: set only one of password or password_bcrypt", r.Name)
+		}
+		// A username may own several routes, but its credential must be identical.
+		cred := r.Password + "\x00" + r.PasswordBcrypt
+		if prev, ok := creds[r.Username]; ok && prev != cred {
+			return fmt.Errorf("routes: username %q has conflicting passwords across routes", r.Username)
+		}
+		creds[r.Username] = cred
+
+		// Webhook is optional; an empty url = capture-only. Such mail must be
+		// storable, else it would be accepted and silently dropped.
+		if !r.HasWebhook() && !c.Logging.Enabled {
+			return fmt.Errorf("routes[%q]: capture-only route (no webhook.url) requires logging.enabled=true", r.Name)
 		}
 		switch r.EffectiveMode(c.Delivery.DefaultMode) {
 		case ModeAsync, ModeSync:

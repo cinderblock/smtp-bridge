@@ -16,13 +16,17 @@ func New(routes []config.Route) *Router {
 	return &Router{routes: routes}
 }
 
-// Match returns the first route whose conditions match rcpt, and whether one
-// was found. Matching is case-insensitive. A route with an empty Match block is
-// a catch-all.
-func (r *Router) Match(rcpt string) (config.Route, bool) {
+// Match returns the first route owned by the authenticated username whose
+// recipient conditions match rcpt, and whether one was found. Matching is
+// case-insensitive; usernames must match exactly. A route with an empty Match
+// block is a catch-all for its owner.
+func (r *Router) Match(username, rcpt string) (config.Route, bool) {
 	local, domain := split(rcpt)
 	localBase := stripTag(local)
 	for _, rt := range r.routes {
+		if rt.Username != username {
+			continue
+		}
 		if matches(rt.Match, rcpt, localBase, domain) {
 			return rt, true
 		}

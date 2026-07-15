@@ -78,14 +78,15 @@ func startTLSBridge(t *testing.T, listeners []config.Listener, certPath, keyPath
 	cfg := &config.Config{
 		Listeners: listeners,
 		Hostname:  "localhost",
-		Auth:      config.Auth{Users: []config.User{{Username: "alice", Password: "s3cret"}}},
 		Logging:   config.Logging{Enabled: true, Database: filepath.Join(t.TempDir(), "test.db")},
 		Delivery:  config.Delivery{DefaultMode: config.ModeSync},
 		TLS:       config.TLS{Mode: config.CertModeFiles, CertFile: certPath, KeyFile: keyPath},
 		Routes: []config.Route{{
-			Name:    "app",
-			Match:   config.Match{RcptDomain: "hooks.example.com"},
-			Webhook: config.Webhook{URL: webhookURL},
+			Name:     "app",
+			Username: "alice",
+			Password: "s3cret",
+			Match:    config.Match{RcptDomain: "hooks.example.com"},
+			Webhook:  config.Webhook{URL: webhookURL},
 		}},
 	}
 	if err := cfg.Prepare(); err != nil {

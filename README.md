@@ -33,7 +33,13 @@ sender ──SMTP (AUTH + optional STARTTLS)──▶ smtp-bridge
 ```
 
 - **AUTH is mandatory** — the server never acts as an open relay. PLAIN and LOGIN
-  SASL mechanisms are supported; passwords may be plaintext or bcrypt hashes.
+  SASL mechanisms are supported. **Credentials are per-route:** each route carries
+  its own username + password (plaintext or bcrypt); a sender authenticates *as* a
+  route and may only deliver to routes that credential owns. Generate a hash with
+  `smtp-bridge hash '<password>'`.
+- **Capture-only routes** — a route with no webhook accepts and stores matching
+  mail (view it with `smtp-bridge messages`) without forwarding, so you can point a
+  sender at it before you have an endpoint, then add the webhook later.
 - **Multiple listeners**, each with its own TLS mode — `none` (plaintext),
   `starttls` (explicit upgrade, ports 587/25/2525), or `implicit` (TLS from the
   first byte, a.k.a. SMTPS, port 465). All share one auth/routing backend.
@@ -41,7 +47,8 @@ sender ──SMTP (AUTH + optional STARTTLS)──▶ smtp-bridge
   `files`, or `auto` — automatic ACME **DNS-01** issuance + renewal via Cloudflare
   (built on certmagic), which needs no inbound HTTP port.
 - **Routing** matches each recipient by exact address, domain, or local-part
-  (ignoring any `+tag` subaddress). Unrouted recipients are rejected at `RCPT`.
+  (ignoring any `+tag` subaddress), scoped to the authenticated user's routes.
+  A recipient with no matching route for that user is rejected at `RCPT`.
 - **Two delivery modes, selectable per route:**
   - `sync` — POST inline; the SMTP transaction only returns `250 OK` if the
     webhook responds `2xx`, giving the sender real backpressure.

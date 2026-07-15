@@ -146,6 +146,42 @@ func (s *Store) LogDelivery(messageID, route string, attempt, statusCode int, su
 	return err
 }
 
+// MessageSummary is a stored message's metadata (no body), for listing.
+type MessageSummary struct {
+	ID         string
+	ReceivedAt time.Time
+	From       string
+	Rcpt       string
+	Route      string
+	Subject    string
+	Size       int
+	Username   string
+}
+
+// RecentMessages returns up to limit logged messages, most recent first. Empty
+// when content logging is disabled (nothing is stored).
+func (s *Store) RecentMessages(limit int) ([]MessageSummary, error) {
+	rows, err := s.db.Query(
+		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username
+		 FROM messages ORDER BY received_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageSummary
+	for rows.Next() {
+		var m MessageSummary
+		var atMillis int64
+		if err := rows.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username); err != nil {
+			return nil, err
+		}
+		m.ReceivedAt = time.UnixMilli(atMillis)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // Rejection records a request the server refused, for later debugging.
 type Rejection struct {
 	At         time.Time

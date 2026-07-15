@@ -108,14 +108,15 @@ func baseConfig(t *testing.T, mode config.Mode, webhookURL, secret string) *conf
 	cfg := &config.Config{
 		Listeners: []config.Listener{{Address: "127.0.0.1:0", TLS: config.TLSModeNone}},
 		Hostname:  "localhost",
-		Auth:      config.Auth{Users: []config.User{{Username: "alice", Password: "s3cret"}}},
 		Logging:   config.Logging{Enabled: true, Database: filepath.Join(t.TempDir(), "test.db")},
 		Delivery:  config.Delivery{DefaultMode: mode, MaxRetries: 3},
 		Routes: []config.Route{{
-			Name:    "app",
-			Match:   config.Match{RcptDomain: "hooks.example.com"},
-			Webhook: config.Webhook{URL: webhookURL, Secret: secret},
-			Include: config.IncludeRules{Raw: true},
+			Name:     "app",
+			Username: "alice",
+			Password: "s3cret",
+			Match:    config.Match{RcptDomain: "hooks.example.com"},
+			Webhook:  config.Webhook{URL: webhookURL, Secret: secret},
+			Include:  config.IncludeRules{Raw: true},
 		}},
 	}
 	// Apply the same defaults/validation the loader does.
@@ -227,6 +228,91 @@ func TestRejectsUnroutedRecipient(t *testing.T) {
 	err := send(t, addr, "s@x.com", "nobody@elsewhere.net", "Subject: x\r\n\r\nx\r\n")
 	if err == nil {
 		t.Fatal("expected rejection for unrouted recipient")
+	}
+}
+
+func TestCaptureOnlyRoute(t *testing.T) {
+	// A route with no webhook: mail should be accepted (250) and stored, and no
+	// HTTP delivery attempted.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	cfg := &config.Config{
+		Listeners: []config.Listener{{Address: "127.0.0.1:0", TLS: config.TLSModeNone}},
+		Hostname:  "localhost",
+		Logging:   config.Logging{Enabled: true, Database: dbPath},
+		Delivery:  config.Delivery{DefaultMode: config.ModeAsync},
+		Routes: []config.Route{{
+			Name:     "capture",
+			Username: "kitchen1",
+			Password: "pw",
+			Match:    config.Match{Rcpt: "t-mobile@kitchen1.sos"},
+			// no webhook -> capture-only
+		}},
+	}
+	if err := cfg.Prepare(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	st, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled, cfg.Logging.LogRejections())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	rt := router.New(cfg.Routes)
+	d := delivery.New(&cfg.Delivery, map[string]config.Route{"capture": cfg.Routes[0]}, st, log)
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.RunWorker(ctx)
+	var n int
+	srv, err := server.New(cfg, rt, d, st, log, func() string { n++; return "cap-" + strconv.Itoa(n) }, nil)
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	if err := srv.Serve(); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	defer func() { cancel(); srv.Close(); st.Close() }()
+	addr := srv.Addrs()[0].String()
+
+	// Authenticate as the route's user and send to the captured address.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := smtp.NewClient(conn, "localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Auth(smtp.PlainAuth("", "kitchen1", "pw", "localhost")); err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if err := c.Mail("verizon@somewhere"); err != nil {
+		t.Fatalf("mail: %v", err)
+	}
+	if err := c.Rcpt("t-mobile@kitchen1.sos"); err != nil {
+		t.Fatalf("rcpt (should be accepted): %v", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte("Subject: hello from tmobile\r\n\r\nbody\r\n"))
+	if err := w.Close(); err != nil {
+		t.Fatalf("data close (should be accepted): %v", err)
+	}
+	c.Quit()
+
+	// The message must be stored (captured), with the right route/user.
+	msgs, err := st.RecentMessages(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 captured message, got %d", len(msgs))
+	}
+	if msgs[0].Route != "capture" || msgs[0].Username != "kitchen1" {
+		t.Errorf("captured message = %+v", msgs[0])
+	}
+	if msgs[0].Subject != "hello from tmobile" {
+		t.Errorf("subject = %q", msgs[0].Subject)
 	}
 }
 

@@ -40,14 +40,10 @@ tls:
   # storage_path: "./certs"           # MUST persist across restarts (LE rate limits)
   # ca_dir_url: ""                    # optional; e.g. LE staging while testing
 
-# AUTH is mandatory: at least one user must be defined. Each user sets exactly
-# one of password (plaintext) or password_bcrypt (a bcrypt hash, preferred).
+# Network-level access control. SMTP credentials are per-route (see routes below);
+# a sender authenticates AS a route and may only deliver to routes that credential
+# owns. AUTH is mandatory.
 auth:
-  users:
-    - username: "alice"
-      password: "change-me"
-    # - username: "bob"
-    #   password_bcrypt: "$2a$10$......"
   # Optional CIDR allowlist applied on top of AUTH. Empty = allow any source IP.
   allow_ips: []
     # - "10.0.0.0/8"
@@ -73,17 +69,28 @@ delivery:
   retry_backoff: "10s"    # async only; exponential (base * 2^(attempt-1))
   concurrency: 4          # async worker parallelism
 
-# Routes are evaluated in order; the first whose match conditions all pass wins.
-# A recipient matching no route is rejected at RCPT time (SMTP 550).
+# Each route carries its own SMTP credential (username + password/password_bcrypt),
+# a recipient match, and an OPTIONAL webhook. A sender authenticates as the route's
+# user; among that user's routes, the first whose match passes wins. A recipient
+# with no matching route for the authenticated user is rejected at RCPT (SMTP 550).
+#
+# Generate a bcrypt hash with:  smtp-bridge hash 'the-password'
 routes:
   - name: "myapp"
+    username: "myapp"
+    # Provide exactly one of password or password_bcrypt (bcrypt preferred).
+    password_bcrypt: "$2a$10$......"
+    # password: "change-me"
     match:
       # Every non-empty condition must match (AND). An empty match block is a
-      # catch-all. rcpt_localpart ignores any "+tag" subaddress suffix.
+      # catch-all for this user. rcpt_localpart ignores any "+tag" suffix.
       rcpt_domain: "hooks.example.com"
       # rcpt_localpart: "myapp"
       # rcpt: "myapp@hooks.example.com"
     webhook:
+      # Omit the webhook entirely to make this a CAPTURE-ONLY route: matching mail
+      # is accepted and stored (see `smtp-bridge messages`) but not forwarded.
+      # Capture-only routes require logging.enabled: true.
       url: "https://myapp.example.com/inbound-mail"
       method: "POST"
       # HMAC-SHA256 signing key. When set, each request carries

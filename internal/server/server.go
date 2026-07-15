@@ -26,6 +26,12 @@ import (
 	"github.com/cinderblock/smtp-bridge/internal/store"
 )
 
+// credential is a resolved per-route SMTP AUTH credential.
+type credential struct {
+	password       string
+	passwordBcrypt string
+}
+
 // Backend implements smtp.Backend.
 type Backend struct {
 	cfg       *config.Config
@@ -33,7 +39,7 @@ type Backend struct {
 	deliverer *delivery.Deliverer
 	store     *store.Store
 	log       *slog.Logger
-	users     map[string]config.User
+	users     map[string]credential // username -> credential, derived from routes
 	allowNets []*net.IPNet
 	newID     func() string
 }
@@ -51,9 +57,11 @@ type Server struct {
 // New builds the multi-listener server. tlsConfig is the shared certificate
 // source (from internal/tlsconf); it may be nil only if every listener is plain.
 func New(cfg *config.Config, rt *router.Router, d *delivery.Deliverer, st *store.Store, log *slog.Logger, newID func() string, tlsConfig *tls.Config) (*Server, error) {
-	users := make(map[string]config.User, len(cfg.Auth.Users))
-	for _, u := range cfg.Auth.Users {
-		users[u.Username] = u
+	// Credentials are per-route; a username may own several routes (config
+	// validation guarantees a consistent password across them).
+	users := make(map[string]credential, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		users[r.Username] = credential{password: r.Password, passwordBcrypt: r.PasswordBcrypt}
 	}
 	var nets []*net.IPNet
 	for _, cidr := range cfg.Auth.AllowIPs {
@@ -232,11 +240,11 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 
 var errAuthFailed = &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "authentication failed"}
 
-func checkPassword(u config.User, password string) bool {
-	if u.PasswordBcrypt != "" {
-		return bcrypt.CompareHashAndPassword([]byte(u.PasswordBcrypt), []byte(password)) == nil
+func checkPassword(c credential, password string) bool {
+	if c.passwordBcrypt != "" {
+		return bcrypt.CompareHashAndPassword([]byte(c.passwordBcrypt), []byte(password)) == nil
 	}
-	return subtle.ConstantTimeCompare([]byte(u.Password), []byte(password)) == 1
+	return subtle.ConstantTimeCompare([]byte(c.password), []byte(password)) == 1
 }
 
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
@@ -247,10 +255,11 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	return nil
 }
 
-// Rcpt matches the recipient to a route, rejecting recipients with no route so
-// senders learn immediately rather than having mail silently dropped.
+// Rcpt matches the recipient to a route owned by the authenticated user,
+// rejecting recipients with no such route so senders learn immediately rather
+// than having mail silently dropped.
 func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
-	route, ok := s.be.router.Match(to)
+	route, ok := s.be.router.Match(s.username, to)
 	if !ok {
 		return s.reject("rcpt", to, &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 1}, Message: "no route configured for recipient"})
 	}
@@ -290,6 +299,12 @@ func (s *session) Data(r io.Reader) error {
 	var asyncRoutes []config.Route
 	for _, name := range order {
 		route := routes[name]
+		// Capture-only route (no webhook): the message is already stored above;
+		// accept it and move on without delivering anywhere.
+		if !route.HasWebhook() {
+			s.be.log.Info("captured message (no webhook)", "route", name, "message_id", id)
+			continue
+		}
 		payload := delivery.BuildPayload(id, receivedAt, route, msg)
 		if route.EffectiveMode(s.be.cfg.Delivery.DefaultMode) == config.ModeSync {
 			ctx, cancel := context.WithTimeout(context.Background(), s.be.cfg.Delivery.Timeout.D())
