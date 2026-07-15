@@ -11,3 +11,6 @@
 
 # Editor/OS noise
 .DS_Store
+
+# Internal working notes — not published
+plans/
