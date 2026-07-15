@@ -34,6 +34,7 @@ func main() {
 func runServer() {
 	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
 	debug := flag.Bool("debug", false, "enable debug logging")
+	check := flag.Bool("check", false, "validate the config and exit (no listeners, no ACME)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -46,6 +47,11 @@ func runServer() {
 	if err != nil {
 		log.Error("config error", "err", err)
 		os.Exit(1)
+	}
+	if *check {
+		fmt.Printf("config OK: %d listener(s), %d route(s), cert mode %q\n",
+			len(cfg.Listeners), len(cfg.Routes), cfg.TLS.Mode)
+		return
 	}
 
 	st, err := store.Open(cfg.Logging.Database, cfg.Logging.Enabled, cfg.Logging.LogRejections())

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Executed by the runner container's supervisor as the `app` program (see
+# ops containers/smtp-bridge-runner/supervisord.conf). Runs the staged
+# smtp-bridge binary with the ops-managed config. cwd = this release dir.
+#
+# The config is bind-mounted read-only at /etc/smtp-bridge/config.yaml; the
+# SQLite DB and the ACME cert cache live under /srv/smtp-bridge/data (on the
+# persistent app volume, OUTSIDE this per-release dir).
+set -euo pipefail
+cd "$(dirname "$0")"
+exec ./smtp-bridge -config /etc/smtp-bridge/config.yaml

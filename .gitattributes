@@ -1,0 +1,5 @@
+# Normalize line endings. Shell scripts and the deploy entrypoint MUST stay LF or
+# they break when executed on the Linux runner (`/bin/bash^M: bad interpreter`).
+* text=auto
+*.sh text eol=lf
+deploy/run text eol=lf
