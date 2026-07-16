@@ -60,6 +60,8 @@ logging:
   # are always logged to stderr regardless; this only controls DB persistence.
   # Defaults to true; set false to disable.
   log_rejections: true
+  # Auto-delete rejections older than this many days (0 = keep forever).
+  rejection_retention_days: 0
 
 # Optional status web UI (view messages + rejections in a browser instead of the
 # CLI; supports selecting and bulk-deleting captured messages). NO authentication

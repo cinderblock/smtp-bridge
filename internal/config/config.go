@@ -127,6 +127,9 @@ type Logging struct {
 	// debugging. Defaults to true; set to false to disable. Pointer so an
 	// unset value is distinguishable from an explicit false.
 	Rejections *bool `yaml:"log_rejections"`
+	// RejectionRetentionDays auto-deletes rejections older than this many days.
+	// 0 (default) keeps them forever.
+	RejectionRetentionDays int `yaml:"rejection_retention_days"`
 }
 
 // LogRejections reports whether rejection logging is enabled (default true).

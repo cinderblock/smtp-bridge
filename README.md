@@ -101,7 +101,10 @@ smtp-bridge rejections -config config.yaml -n 200 # last 200
 ```
 
 Reading works while the server is running (WAL allows concurrent readers).
-Disable DB persistence with `logging.log_rejections: false` (stderr logs remain).
+Disable DB persistence with `logging.log_rejections: false` (stderr logs remain),
+and set `logging.rejection_retention_days` to auto-purge rejections older than N
+days (0 = keep forever). The status web UI can also select and bulk-delete
+rejections (and messages).
 
 ## Status web UI (optional)
 

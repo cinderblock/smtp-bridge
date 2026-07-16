@@ -250,6 +250,7 @@ func (s *Store) DeleteAllMessages() (int64, error) {
 
 // Rejection records a request the server refused, for later debugging.
 type Rejection struct {
+	ID         int64
 	At         time.Time
 	Stage      string // connect | auth | mail | rcpt | data
 	Code       int    // SMTP reply code
@@ -281,7 +282,7 @@ func (s *Store) LogRejection(r Rejection) error {
 // RecentRejections returns up to limit rejections, most recent first.
 func (s *Store) RecentRejections(limit int) ([]Rejection, error) {
 	rows, err := s.db.Query(
-		`SELECT at, stage, code, remote_addr, username, from_addr, rcpt, reason, COALESCE(port,0)
+		`SELECT id, at, stage, code, remote_addr, username, from_addr, rcpt, reason, COALESCE(port,0)
 		 FROM rejections ORDER BY at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -292,13 +293,53 @@ func (s *Store) RecentRejections(limit int) ([]Rejection, error) {
 	for rows.Next() {
 		var r Rejection
 		var atMillis int64
-		if err := rows.Scan(&atMillis, &r.Stage, &r.Code, &r.RemoteAddr, &r.Username, &r.From, &r.Rcpt, &r.Reason, &r.Port); err != nil {
+		if err := rows.Scan(&r.ID, &atMillis, &r.Stage, &r.Code, &r.RemoteAddr, &r.Username, &r.From, &r.Rcpt, &r.Reason, &r.Port); err != nil {
 			return nil, err
 		}
 		r.At = time.UnixMilli(atMillis)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// DeleteRejections removes the given rejection rows by id, returning the count.
+func (s *Store) DeleteRejections(ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+	res, err := s.db.Exec(`DELETE FROM rejections WHERE id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete rejections: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// DeleteAllRejections clears the entire rejection log.
+func (s *Store) DeleteAllRejections() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM rejections`)
+	if err != nil {
+		return 0, fmt.Errorf("delete all rejections: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PurgeRejectionsOlderThan deletes rejections recorded before cutoff, returning
+// the count. Used for automatic retention.
+func (s *Store) PurgeRejectionsOlderThan(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM rejections WHERE at < ?`, cutoff.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("purge rejections: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // Job is a queued async delivery.

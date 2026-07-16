@@ -111,6 +111,11 @@ func runServer() {
 	// Async delivery worker.
 	go d.RunWorker(ctx)
 
+	// Auto-purge old rejections if a retention period is configured.
+	if days := cfg.Logging.RejectionRetentionDays; days > 0 {
+		go runRejectionPurge(ctx, st, log, days)
+	}
+
 	// Build the shared TLS certificate source (may obtain a cert via ACME).
 	tlsConfig, err := tlsconf.Build(ctx, cfg.TLS, log)
 	if err != nil {
@@ -150,6 +155,30 @@ func runServer() {
 	srv.Close()
 	if webSrv != nil {
 		webSrv.Close()
+	}
+}
+
+// runRejectionPurge deletes rejections older than `days` days at startup and
+// then every 6h, until ctx is cancelled.
+func runRejectionPurge(ctx context.Context, st *store.Store, log *slog.Logger, days int) {
+	purge := func() {
+		cutoff := time.Now().AddDate(0, 0, -days)
+		if n, err := st.PurgeRejectionsOlderThan(cutoff); err != nil {
+			log.Error("rejection purge failed", "err", err)
+		} else if n > 0 {
+			log.Info("purged old rejections", "count", n, "retention_days", days)
+		}
+	}
+	purge()
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			purge()
+		}
 	}
 }
 

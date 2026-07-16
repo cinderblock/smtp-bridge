@@ -37,7 +37,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /message/{id}/raw", s.handleRaw)
 	mux.HandleFunc("POST /delete", s.handleDelete)
 	mux.HandleFunc("GET /rejections", s.handleRejections)
+	mux.HandleFunc("POST /delete-rejections", s.handleDeleteRejections)
 	return mux
+}
+
+// handleDeleteRejections drops selected rejections (form field "id", repeated)
+// or all of them ("all=1"), then redirects back to the rejections list.
+func (s *Server) handleDeleteRejections(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if r.PostForm.Get("all") != "" {
+		if _, err := s.store.DeleteAllRejections(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		var ids []int64
+		for _, v := range r.PostForm["id"] {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				ids = append(ids, n)
+			}
+		}
+		if len(ids) > 0 {
+			if _, err := s.store.DeleteRejections(ids); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	http.Redirect(w, r, "/rejections", http.StatusSeeOther)
 }
 
 // handleDelete drops selected messages (form field "id", repeated) or all of
@@ -217,13 +247,22 @@ button.danger{border-color:#c0392b88;color:#c0392b}
 {{template "bottom" .}}{{end}}
 
 {{define "rejections"}}{{template "top" .}}
-{{if .Rejections}}<table><thead><tr>
+{{if .Rejections}}
+<form method="post" action="/delete-rejections">
+<p class="toolbar">
+<button type="submit">Delete selected</button>
+<button type="submit" name="all" value="1" class="danger" onclick="return confirm('Delete ALL rejections?')">Delete all</button>
+</p>
+<table><thead><tr>
+<th><input type="checkbox" aria-label="select all" onclick="for(const c of this.closest('table').querySelectorAll('input[name=id]'))c.checked=this.checked"></th>
 <th>Time</th><th>Port</th><th>Stage</th><th>Code</th><th>IP</th><th>User</th><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>
 {{range .Rejections}}<tr>
+<td><input type="checkbox" name="id" value="{{.ID}}"></td>
 <td class="mono">{{ts .At}}</td><td class="mono">{{.Port}}</td><td>{{.Stage}}</td><td>{{.Code}}</td>
 <td class="mono">{{.RemoteAddr}}</td><td>{{.Username}}</td>
 <td class="mono">{{.From}}</td><td class="mono">{{.Rcpt}}</td><td>{{.Reason}}</td></tr>{{end}}
 </tbody></table>
+</form>
 {{else}}<p class="empty">No rejections recorded.</p>{{end}}
 {{template "bottom" .}}{{end}}
 `

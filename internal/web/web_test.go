@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,21 @@ func TestDetailAndRaw(t *testing.T) {
 	rr, _ = get(t, h, "/message/nope")
 	if rr.Code != 404 {
 		t.Errorf("missing message should 404, got %d", rr.Code)
+	}
+}
+
+func TestDeleteRejectionsEndpoint(t *testing.T) {
+	s, st := newTestServer(t)
+	rows, _ := st.RecentRejections(10)
+	if len(rows) != 1 {
+		t.Fatalf("want 1 rejection, got %d", len(rows))
+	}
+	rr := post(t, s.Handler(), "/delete-rejections", "id="+strconv.FormatInt(rows[0].ID, 10))
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect, got %d", rr.Code)
+	}
+	if rows, _ = st.RecentRejections(10); len(rows) != 0 {
+		t.Errorf("rejection should be gone, %d left", len(rows))
 	}
 }
 
