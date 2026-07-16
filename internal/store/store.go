@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	size         INTEGER NOT NULL,
 	remote_addr  TEXT,
 	username     TEXT,
+	port         INTEGER,
 	raw          BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
@@ -88,14 +89,18 @@ CREATE TABLE IF NOT EXISTS rejections (
 	username    TEXT,
 	from_addr   TEXT,
 	rcpt        TEXT,
-	reason      TEXT
+	reason      TEXT,
+	port        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_rejections_at ON rejections(at);
 `
-	_, err := s.db.Exec(schema)
-	if err != nil {
+	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// Columns added after the initial release. ALTER ... ADD COLUMN errors if the
+	// column already exists (fresh DBs get it from CREATE above) — ignore that.
+	s.db.Exec(`ALTER TABLE messages ADD COLUMN port INTEGER`)
+	s.db.Exec(`ALTER TABLE rejections ADD COLUMN port INTEGER`)
 	return nil
 }
 
@@ -110,6 +115,7 @@ type MessageLog struct {
 	Size       int
 	RemoteAddr string
 	Username   string
+	Port       int    // local port the connection arrived on (25/465/587/…)
 	Raw        []byte // persisted only when content logging is enabled
 }
 
@@ -121,10 +127,10 @@ func (s *Store) LogMessage(m MessageLog) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO messages
-		 (id, received_at, from_addr, rcpt, route, subject, size, remote_addr, username, raw)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		 (id, received_at, from_addr, rcpt, route, subject, size, remote_addr, username, port, raw)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.ReceivedAt.UnixMilli(), m.From, strings.Join(m.Rcpt, ", "),
-		m.Route, m.Subject, m.Size, m.RemoteAddr, m.Username, m.Raw,
+		m.Route, m.Subject, m.Size, m.RemoteAddr, m.Username, m.Port, m.Raw,
 	)
 	if err != nil {
 		return fmt.Errorf("log message: %w", err)
@@ -156,13 +162,14 @@ type MessageSummary struct {
 	Subject    string
 	Size       int
 	Username   string
+	Port       int // local port the connection arrived on
 }
 
 // RecentMessages returns up to limit logged messages, most recent first. Empty
 // when content logging is disabled (nothing is stored).
 func (s *Store) RecentMessages(limit int) ([]MessageSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username
+		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username, COALESCE(port,0)
 		 FROM messages ORDER BY received_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -173,7 +180,7 @@ func (s *Store) RecentMessages(limit int) ([]MessageSummary, error) {
 	for rows.Next() {
 		var m MessageSummary
 		var atMillis int64
-		if err := rows.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username); err != nil {
+		if err := rows.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username, &m.Port); err != nil {
 			return nil, err
 		}
 		m.ReceivedAt = time.UnixMilli(atMillis)
@@ -192,12 +199,12 @@ type Message struct {
 // GetMessage returns the full stored message by id, or nil if not found.
 func (s *Store) GetMessage(id string) (*Message, error) {
 	row := s.db.QueryRow(
-		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username, remote_addr, raw
+		`SELECT id, received_at, from_addr, rcpt, route, subject, size, username, COALESCE(port,0), remote_addr, raw
 		 FROM messages WHERE id = ?`, id,
 	)
 	var m Message
 	var atMillis int64
-	err := row.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username, &m.RemoteAddr, &m.Raw)
+	err := row.Scan(&m.ID, &atMillis, &m.From, &m.Rcpt, &m.Route, &m.Subject, &m.Size, &m.Username, &m.Port, &m.RemoteAddr, &m.Raw)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -251,6 +258,7 @@ type Rejection struct {
 	From       string
 	Rcpt       string
 	Reason     string
+	Port       int // local port the connection arrived on
 }
 
 // LogRejection persists a rejected request. It is a no-op when rejection
@@ -260,9 +268,9 @@ func (s *Store) LogRejection(r Rejection) error {
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO rejections (at, stage, code, remote_addr, username, from_addr, rcpt, reason)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		r.At.UnixMilli(), r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason,
+		`INSERT INTO rejections (at, stage, code, remote_addr, username, from_addr, rcpt, reason, port)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		r.At.UnixMilli(), r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason, r.Port,
 	)
 	if err != nil {
 		return fmt.Errorf("log rejection: %w", err)
@@ -273,7 +281,7 @@ func (s *Store) LogRejection(r Rejection) error {
 // RecentRejections returns up to limit rejections, most recent first.
 func (s *Store) RecentRejections(limit int) ([]Rejection, error) {
 	rows, err := s.db.Query(
-		`SELECT at, stage, code, remote_addr, username, from_addr, rcpt, reason
+		`SELECT at, stage, code, remote_addr, username, from_addr, rcpt, reason, COALESCE(port,0)
 		 FROM rejections ORDER BY at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -284,7 +292,7 @@ func (s *Store) RecentRejections(limit int) ([]Rejection, error) {
 	for rows.Next() {
 		var r Rejection
 		var atMillis int64
-		if err := rows.Scan(&atMillis, &r.Stage, &r.Code, &r.RemoteAddr, &r.Username, &r.From, &r.Rcpt, &r.Reason); err != nil {
+		if err := rows.Scan(&atMillis, &r.Stage, &r.Code, &r.RemoteAddr, &r.Username, &r.From, &r.Rcpt, &r.Reason, &r.Port); err != nil {
 			return nil, err
 		}
 		r.At = time.UnixMilli(atMillis)

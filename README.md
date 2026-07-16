@@ -97,7 +97,7 @@ smtp-bridge rejections -config config.yaml -n 200 # last 200
 ```
 
 ```
-2026-07-14T14:43:28-07:00  stage=rcpt  code=550  ip=203.0.113.9:51002 user="alice" from="a@x.com" rcpt="typo@wrong.example" reason="no route configured for recipient"
+2026-07-14T14:43:28-07:00  port=587 stage=rcpt  code=550  ip=203.0.113.9:51002 user="alice" from="a@x.com" rcpt="typo@wrong.example" reason="no route configured for recipient"
 ```
 
 Reading works while the server is running (WAL allows concurrent readers).

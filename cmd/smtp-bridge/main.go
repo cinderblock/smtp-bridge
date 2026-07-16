@@ -185,8 +185,8 @@ func runRejections(argv []string) {
 	// Newest first from the query; print oldest-first so a tail reads naturally.
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
-		fmt.Printf("%s  stage=%-5s code=%d  ip=%s user=%q from=%q rcpt=%q  reason=%q\n",
-			r.At.Format(time.RFC3339), r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason)
+		fmt.Printf("%s  port=%d stage=%-5s code=%d  ip=%s user=%q from=%q rcpt=%q  reason=%q\n",
+			r.At.Format(time.RFC3339), r.Port, r.Stage, r.Code, r.RemoteAddr, r.Username, r.From, r.Rcpt, r.Reason)
 	}
 }
 
@@ -221,7 +221,7 @@ func runMessages(argv []string) {
 	}
 	for i := len(rows) - 1; i >= 0; i-- {
 		m := rows[i]
-		fmt.Printf("%s  user=%q route=%q from=%q rcpt=%q size=%d  subject=%q\n",
-			m.ReceivedAt.Format(time.RFC3339), m.Username, m.Route, m.From, m.Rcpt, m.Size, m.Subject)
+		fmt.Printf("%s  port=%d user=%q route=%q from=%q rcpt=%q size=%d  subject=%q\n",
+			m.ReceivedAt.Format(time.RFC3339), m.Port, m.Username, m.Route, m.From, m.Rcpt, m.Size, m.Subject)
 	}
 }

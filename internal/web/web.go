@@ -179,10 +179,11 @@ button.danger{border-color:#c0392b88;color:#c0392b}
 </p>
 <table><thead><tr>
 <th><input type="checkbox" aria-label="select all" onclick="for(const c of this.closest('table').querySelectorAll('input[name=id]'))c.checked=this.checked"></th>
-<th>Received</th><th>User</th><th>Route</th><th>From</th><th>To</th><th>Subject</th><th>Size</th></tr></thead><tbody>
+<th>Received</th><th>Port</th><th>User</th><th>Route</th><th>From</th><th>To</th><th>Subject</th><th>Size</th></tr></thead><tbody>
 {{range .Messages}}<tr>
 <td><input type="checkbox" name="id" value="{{.ID}}"></td>
 <td class="mono"><a href="/message/{{.ID}}">{{ts .ReceivedAt}}</a></td>
+<td class="mono">{{.Port}}</td>
 <td>{{.Username}}</td><td>{{.Route}}</td>
 <td class="mono">{{.From}}</td><td class="mono">{{.Rcpt}}</td>
 <td>{{.Subject}}</td><td class="muted">{{.Size}}</td></tr>{{end}}
@@ -203,6 +204,7 @@ button.danger{border-color:#c0392b88;color:#c0392b}
 <dt>Route</dt><dd>{{.M.Route}}</dd>
 <dt>From (envelope)</dt><dd class="mono">{{.M.From}}</dd>
 <dt>To (envelope)</dt><dd class="mono">{{.M.Rcpt}}</dd>
+<dt>Arrived on port</dt><dd class="mono">{{.M.Port}}</dd>
 <dt>Remote</dt><dd class="mono">{{.M.RemoteAddr}}</dd>
 <dt>Subject</dt><dd>{{.P.Subject}}</dd>
 <dt>Size</dt><dd>{{.M.Size}} bytes &middot; <a href="/message/{{.M.ID}}/raw">raw .eml</a></dd>
@@ -216,9 +218,9 @@ button.danger{border-color:#c0392b88;color:#c0392b}
 
 {{define "rejections"}}{{template "top" .}}
 {{if .Rejections}}<table><thead><tr>
-<th>Time</th><th>Stage</th><th>Code</th><th>IP</th><th>User</th><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>
+<th>Time</th><th>Port</th><th>Stage</th><th>Code</th><th>IP</th><th>User</th><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>
 {{range .Rejections}}<tr>
-<td class="mono">{{ts .At}}</td><td>{{.Stage}}</td><td>{{.Code}}</td>
+<td class="mono">{{ts .At}}</td><td class="mono">{{.Port}}</td><td>{{.Stage}}</td><td>{{.Code}}</td>
 <td class="mono">{{.RemoteAddr}}</td><td>{{.Username}}</td>
 <td class="mono">{{.From}}</td><td class="mono">{{.Rcpt}}</td><td>{{.Reason}}</td></tr>{{end}}
 </tbody></table>

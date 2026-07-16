@@ -22,11 +22,11 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	if err := st.LogMessage(store.MessageLog{
 		ID: "m1", ReceivedAt: time.Now(), From: "sender@x.com",
 		Rcpt: []string{"t-mobile@kitchen1.sos"}, Route: "t-mobile-kitchen1",
-		Subject: "Captured Subject", Size: len(raw), Username: "kitchen1", Raw: []byte(raw),
+		Subject: "Captured Subject", Size: len(raw), Username: "kitchen1", Port: 465, Raw: []byte(raw),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	st.LogRejection(store.Rejection{At: time.Now(), Stage: "auth", Code: 535, Username: "baduser", Reason: "authentication failed"})
+	st.LogRejection(store.Rejection{At: time.Now(), Stage: "auth", Code: 535, Username: "baduser", Reason: "authentication failed", Port: 587})
 	return New(st), st
 }
 
@@ -44,7 +44,7 @@ func TestList(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatalf("status %d", rr.Code)
 	}
-	for _, want := range []string{"Captured Subject", "kitchen1", "t-mobile@kitchen1.sos", "/message/m1"} {
+	for _, want := range []string{"Captured Subject", "kitchen1", "t-mobile@kitchen1.sos", "/message/m1", ">465<"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("list missing %q", want)
 		}
@@ -81,6 +81,9 @@ func TestRejectionsView(t *testing.T) {
 	}
 	if !strings.Contains(body, "authentication failed") || !strings.Contains(body, "baduser") {
 		t.Error("rejections view missing expected rows")
+	}
+	if !strings.Contains(body, ">587<") {
+		t.Error("rejections view missing the arrival port")
 	}
 }
 

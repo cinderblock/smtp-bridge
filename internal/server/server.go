@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,27 +150,39 @@ func (s *Server) Close() {
 // NewSession enforces the optional IP allowlist and starts a session.
 func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	remote := c.Conn().RemoteAddr()
+	port := localPort(c.Conn())
 	if len(b.allowNets) > 0 {
 		host, _, _ := net.SplitHostPort(remote.String())
 		ip := net.ParseIP(host)
 		if ip == nil || !b.ipAllowed(ip) {
 			err := &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "connection not permitted"}
-			b.recordRejection("connect", remote.String(), "", "", "", err)
+			b.recordRejection("connect", remote.String(), port, "", "", "", err)
 			return nil, err
 		}
 	}
-	return &session{be: b, remote: remote.String()}, nil
+	return &session{be: b, remote: remote.String(), localPort: port}, nil
+}
+
+// localPort returns the local (server-side) port a connection arrived on — i.e.
+// which listener (25/465/587/…) the client connected to.
+func localPort(c net.Conn) int {
+	if tcp, ok := c.LocalAddr().(*net.TCPAddr); ok {
+		return tcp.Port
+	}
+	_, p, _ := net.SplitHostPort(c.LocalAddr().String())
+	n, _ := strconv.Atoi(p)
+	return n
 }
 
 // recordRejection logs a refused request to stderr and persists it for later
-// inspection via the `rejections` subcommand.
-func (b *Backend) recordRejection(stage, remote, username, from, rcpt string, e *smtp.SMTPError) {
+// inspection via the `rejections` subcommand / web UI.
+func (b *Backend) recordRejection(stage, remote string, port int, username, from, rcpt string, e *smtp.SMTPError) {
 	b.log.Warn("rejected request",
 		"stage", stage, "code", e.Code, "reason", e.Message,
-		"remote", remote, "user", username, "from", from, "rcpt", rcpt)
+		"remote", remote, "port", port, "user", username, "from", from, "rcpt", rcpt)
 	if err := b.store.LogRejection(store.Rejection{
 		At: time.Now(), Stage: stage, Code: e.Code,
-		RemoteAddr: remote, Username: username, From: from, Rcpt: rcpt, Reason: e.Message,
+		RemoteAddr: remote, Username: username, From: from, Rcpt: rcpt, Reason: e.Message, Port: port,
 	}); err != nil {
 		b.log.Error("failed to persist rejection", "err", err)
 	}
@@ -191,17 +204,18 @@ type recipient struct {
 }
 
 type session struct {
-	be       *Backend
-	remote   string
-	username string
-	from     string
-	rcpts    []recipient
+	be        *Backend
+	remote    string
+	localPort int
+	username  string
+	from      string
+	rcpts     []recipient
 }
 
 // reject records a rejection with the session's current envelope context and
 // returns the error to hand back to go-smtp.
 func (s *session) reject(stage, rcpt string, e *smtp.SMTPError) error {
-	s.be.recordRejection(stage, s.remote, s.username, s.from, rcpt, e)
+	s.be.recordRejection(stage, s.remote, s.localPort, s.username, s.from, rcpt, e)
 	return e
 }
 
@@ -216,11 +230,11 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			// Compare against a dummy bcrypt to reduce username enumeration timing.
 			bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinva"), []byte(password))
 			// Record with the attempted username (s.username is still unset).
-			s.be.recordRejection("auth", s.remote, username, "", "", errAuthFailed)
+			s.be.recordRejection("auth", s.remote, s.localPort, username, "", "", errAuthFailed)
 			return errAuthFailed
 		}
 		if !checkPassword(u, password) {
-			s.be.recordRejection("auth", s.remote, username, "", "", errAuthFailed)
+			s.be.recordRejection("auth", s.remote, s.localPort, username, "", "", errAuthFailed)
 			return errAuthFailed
 		}
 		s.username = username
@@ -289,7 +303,7 @@ func (s *session) Data(r io.Reader) error {
 	if err := s.be.store.LogMessage(store.MessageLog{
 		ID: id, ReceivedAt: receivedAt, From: s.from, Rcpt: s.rcptAddrs(),
 		Route: strings.Join(order, ","), Subject: msg.Subject, Size: len(raw),
-		RemoteAddr: s.remote, Username: s.username, Raw: raw,
+		RemoteAddr: s.remote, Username: s.username, Port: s.localPort, Raw: raw,
 	}); err != nil {
 		s.be.log.Error("failed to log message", "message_id", id, "err", err)
 	}

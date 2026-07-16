@@ -314,6 +314,12 @@ func TestCaptureOnlyRoute(t *testing.T) {
 	if msgs[0].Subject != "hello from tmobile" {
 		t.Errorf("subject = %q", msgs[0].Subject)
 	}
+	// The recorded port must be the listener the connection arrived on.
+	_, portStr, _ := net.SplitHostPort(addr)
+	wantPort, _ := strconv.Atoi(portStr)
+	if msgs[0].Port != wantPort {
+		t.Errorf("captured port = %d, want %d", msgs[0].Port, wantPort)
+	}
 }
 
 func TestRejectionsRecorded(t *testing.T) {
