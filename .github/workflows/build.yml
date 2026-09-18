@@ -1,0 +1,94 @@
+name: Build image
+
+# Push to master → test, build the image, push it to GHCR. That is the whole
+# job: this repo publishes a *candidate*, it does not deploy.
+#
+# What runs on firefly is decided in the ops repo (cinderblock/ops) by
+# servers/firefly/stacks/smtp-bridge/pin.json, which names an image digest.
+# Shipping a build is two steps: push here, then edit that pin and push ops.
+#
+# This repo has no self-hosted runner and no access to firefly. It used to run
+# `go build` INSIDE the production container, beside the app's SQLite DB and its
+# ACME cert cache. See ops plans/ops-owned-app-deploys.md.
+#
+# The runtime config (routes/users/TLS) is ops-managed and bind-mounted at
+# /etc/smtp-bridge/config.yaml — this repo never writes it.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }} # cinderblock/smtp-bridge
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}:latest
+          # ops verifies this label against the commit its pin claims, so a
+          # hand-edited pin.json can't quietly ship a different build than the
+          # one that was reviewed. Required — the deploy fails without it.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarize how to deploy this build
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```json'
+            echo '{'
+            echo '  "image": "${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}",'
+            echo '  "digest": "${{ steps.push.outputs.digest }}",'
+            echo '  "source": {'
+            echo '    "repo": "${{ github.repository }}",'
+            echo '    "commit": "${{ github.sha }}"'
+            echo '  }'
+            echo '}'
+            echo '```'
+            echo
+            echo "Paste that into \`servers/firefly/stacks/smtp-bridge/pin.json\`"
+            echo "in cinderblock/ops and push. Nothing reaches firefly until you do."
+          } >> "$GITHUB_STEP_SUMMARY"

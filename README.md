@@ -183,5 +183,10 @@ GOOS=windows GOARCH=amd64 go build -o dist/smtp-bridge-windows-amd64.exe ./cmd/s
 Working: mandatory AUTH, multi-listener (none/starttls/implicit), TLS via static
 files or automatic ACME DNS-01 (Cloudflare), routing, sync + async delivery,
 retries, HMAC signing, SQLite logging + durable queue, rejected-request logging +
-`rejections` viewer. Planned: Dockerfile / goreleaser, systemd unit, optional D1
-remote log sink, metrics.
+`rejections` viewer, and a `Dockerfile` (distroless, static binary) that CI
+publishes to `ghcr.io/cinderblock/smtp-bridge:<sha>` on every push to `master`.
+**Publishing is not deploying**: the production instance on firefly runs whichever
+build the ops repo (`cinderblock/ops`) pins in
+`servers/firefly/stacks/smtp-bridge/pin.json`, with its config bind-mounted from
+there; only an ops push changes it. Planned: goreleaser, optional D1 remote log
+sink, metrics.
