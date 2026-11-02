@@ -190,3 +190,4 @@ build the ops repo (`cinderblock/ops`) pins in
 `servers/firefly/stacks/smtp-bridge/pin.json`, with its config bind-mounted from
 there; only an ops push changes it. Planned: goreleaser, optional D1 remote log
 sink, metrics.
+
