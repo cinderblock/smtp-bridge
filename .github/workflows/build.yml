@@ -16,6 +16,8 @@ name: Build image
 on:
   push:
     branches: [master]
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 env:
@@ -60,7 +62,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          # Build only on a pull request: nothing is published until it reaches master.
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}:latest
@@ -74,6 +77,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Summarize how to deploy this build
+        if: github.event_name != 'pull_request'
         run: |
           {
             echo "### Image published"
